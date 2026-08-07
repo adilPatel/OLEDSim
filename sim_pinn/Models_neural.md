@@ -95,25 +95,12 @@ Sign convention: the same as `sim_dd` and the DDNet paper's Eq. 1, where a net
 `lambda^2*phi'' = -C` for the depletion case, which is the identical equation
 with `n = p = 0` and `C` the fixed dopant charge.
 
-# The carrier densities are supplied, not solved
+# TODO: Carrier densities
 
-Because `C = 0`, Poisson has no source at all unless `n` and `p` are given.
-The depletion approximation used in `poisson_pinn_doped.py` is unavailable
-here for exactly that reason — there is no dopant charge to fall back on when
-the carriers are neglected.
-
-Since the n-Net and p-Net are to be provided separately, this demo takes
-`n(x)` and `p(x)` from the converged DEVSIM solution **at the same bias** and
-treats them as fixed, known source terms. That makes the Poisson problem
-linear in `phi` and gives an unambiguous reference: with the *exact* `n` and
-`p` imposed, a correct phi-Net must reproduce DEVSIM's potential.
-
-The DEVSIM profiles live on a non-uniform 125-node mesh while the PINN samples
-collocation points anywhere in the domain, so the source is interpolated
-(`_interp_tensor`, piecewise linear via `torch.searchsorted`). The
-interpolation is done in **linear** space, not log space: it is the difference
-`n - p` that enters Poisson, and that difference changes sign near the anode
-where holes dominate, which a log interpolation cannot represent.
+A logarithmic formulation is used for the carrier densities n,p owing to their 
+very large changes in concentrations. where n_hat, p_hat = -log(n_hat,p_hat/C_tilde).
+The network's internals operate in the log space, and the output is exponentiated
+to compute the residuals. 
 
 # Boundary conditions
 
@@ -125,19 +112,11 @@ so the two problems are identical rather than merely similar:
     phi(0) = +0.500 V  ->  phi_hat = +19.31
     phi(L) =  0.000 V  ->  phi_hat =   0.00
 
-## Consistency check: does DEVSIM satisfy the scaled equation?
+TODO: Contact carrier densities
+The contact densities are also fixed at both ends (Dirichlet), with the values
+specified in devsim_reference.py.
 
-Before training anything, the scaled equation was checked directly against the
-DEVSIM solution: evaluate `lambda^2*phi_hat''` on DEVSIM's own mesh (with a
-non-uniform three-point stencil) and compare against `n_hat - p_hat`.
 
-    median ratio (LHS/RHS) = 1.0000
-    relative L1 of residual = 1.2e-12
-
-This confirms the scaling, the sign convention, the permittivity, and the
-`C = 0` assumption are all correct, and that the PINN is being asked to solve
-precisely the equation DEVSIM solved. Worth doing first: had the scaling been
-wrong, the PINN would have converged faithfully to the wrong answer.
 
 ## PINN Architecture
 
@@ -146,8 +125,13 @@ Then the weights are initialised using Glorot-Xavier. Then points will be
 randomly sampled in the region, and the residuals are computed with automatic
 differentiation. It's trained with ADAM.
 
-As implemented in `poisson_demo.py`, following the same phase structure
+As implemented in `forward_demo.py`, following the same phase structure
 (A–E) as `poisson_pinn_doped.py`:
+
+TODO: n and p networks
+The electron and hole networks n,p are also FCNNs but operate in log space as 
+described previously. They possess the same overall structure besides the 
+exponentiation.
 
 - **Network.** Fully-connected, 4 layers of 64 units, `tanh` activations.
   `tanh` is required rather than preferred: the residual needs a *second*
@@ -164,73 +148,9 @@ As implemented in `poisson_demo.py`, following the same phase structure
 
 # Measured settings
 
-Two defaults differ from `poisson_pinn_doped.py`, both measured rather than
-assumed.
+[Add the output details here...]
 
-**Collocation count `N_INT = 8192`** (vs 2048): the source term here is an
-interpolated DEVSIM profile rather than a smooth analytic `tanh`, so denser
-sampling resolves it better.
-
-| `N_INT` | relative L1 |
-|---|---|
-| 2048 | 1.74 % |
-| 8192 | 1.21 % |
-
-**Boundary weight `W_BC = 1.0`.** This is not a placeholder — raising it makes
-the solve markedly *worse*. The Dirichlet values are O(19) in scaled units
-(`0.5 V / 0.0259 V = 19.3`), so the squared boundary term starts around 1e2,
-and any upweighting lets it dominate the loss and starve the interior
-residual:
-
-| `W_BC` | relative L1 |
-|---|---|
-| **1** | **1.74 %** |
-| 10 | 35.3 % |
-| 100 | 64.7 % |
-| 1000 | 78.6 % |
-
-(measured at `N_INT = 2048`.) The hard-constraint alternative — multiplying
-the network output by a factor vanishing at both contacts, as DDNet does for
-its carrier outputs — would remove the trade-off entirely and is the natural
-next step if the boundary error ever becomes the limit. Here it is already
-~1e-9, so it is not.
-
-## Results
-
-At 2.5 V, against the DEVSIM drift-diffusion solution:
-
-| metric | value |
-|---|---|
-| relative L1 error | **1.21 %** |
-| max absolute error | 3.9 mV |
-| boundary residual | ~1e-8 |
-| final training loss | 4.1e-04 |
-
-The relative L1 error is the metric used throughout the DDNet paper
-(Supplementary Eq. 3), so these numbers are directly comparable with it — and
-comfortably inside the "below 2%" the paper reports for its 1D forward
-solutions.
-
-`poisson_demo.png` has four panels: (a) both potentials overlaid — the
-requested comparison, (b) their pointwise difference, (c) the DEVSIM carrier
-densities used as the source term (log axis: they span ~26 decades), and
-(d) the training loss.
-
-# Remaining error
-
-The pointwise difference in panel (b) is a single smooth bulge of one sign,
-peaking around 4 mV mid-device, rather than random scatter. That is the
-signature of a small, nearly constant error in `phi''` integrating up twice —
-a Poisson solution is pinned only by its boundary values, so a slight drift in
-curvature is cheap in the interior residual.
-
-It is *not* caused by the boundary term being underweighted (see the `W_BC`
-table above — that was tested and rejected). Increasing collocation density
-reduces it, which points at how well the interpolated source term is resolved.
-The most promising next steps are the hard-constraint ansatz and a
-scale-normalised residual.
-
-## Next steps
+## Next steps [REMOVE THIS SECTION AFTER IMPLEMENTING THE N AND P NETS]
 
 This demo deliberately solves only the Poisson equation, with `n` and `p`
 supplied from DEVSIM. Adding the n-Net and p-Net makes the system nonlinear
