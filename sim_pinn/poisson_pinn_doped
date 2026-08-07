@@ -1,0 +1,241 @@
+"""
+poisson_pinn.py
+
+Minimal, runnable Poisson-only PINN for a 1D p-n junction.
+
+Purpose: validate the autodifferentiation + training-loop machinery in
+isolation, BEFORE coupling in the carrier continuity equations for n and p.
+
+Physics used (the "depletion approximation"):
+    In the depletion region of a p-n junction at equilibrium, the mobile
+    carrier densities n, p are negligible compared to the fixed dopant
+    charge. So the Poisson equation decouples from the continuity
+    equations and becomes a *linear* boundary value problem:
+
+        lambda^2 * phi_hat''(x) = -C(x)      (scaled, nondimensional form)
+
+    with Dirichlet (Ohmic) boundary conditions at the contacts. This has
+    a closed-form solution for a step doping profile, which is exactly
+    what we want: a known-answer test case to check the PINN machinery
+    against, before trusting it on a coupled nonlinear problem with no
+    closed form.
+
+Every phase below is numbered to match the walkthrough document
+(DDNet_Forward_Walkthrough.md), restricted to phi-Net only.
+"""
+
+import numpy as np
+import torch
+import torch.nn as nn
+
+torch.manual_seed(0)
+np.random.seed(0)
+
+# ============================================================
+# PHASE A -- Problem setup (Steps 1-2)
+# ============================================================
+
+# --- Step 1: nondimensionalization / scaling constants ---
+# Physical constants (silicon, room temperature)
+q      = 1.602e-19          # C
+eps_si = 11.7 * 8.85e-14    # C^2 / (s^2 * kg * cm^3)  [as in the paper]
+Ut     = 0.0259             # thermal voltage, V
+ni     = 1.0e10              # intrinsic carrier concentration, cm^-3
+
+Nd = 1.0e16   # donor concentration, cm^-3 (n-type side)
+Na = 1.0e16   # acceptor concentration, cm^-3 (p-type side)
+
+ell   = 1.0e-4               # characteristic length = 1 um, in cm
+C_tilde = max(Nd, Na)        # density scale
+lam_D = np.sqrt(eps_si * Ut / (q * C_tilde))   # Debye length, cm
+lam   = lam_D / ell                            # scaled Debye parameter
+
+print(f"Debye length lambda_D = {lam_D:.4e} cm")
+print(f"Scaled parameter lambda = {lam:.4e}")
+
+# --- Step 2: geometry, doping profile, boundary conditions ---
+# Domain: x in [-1, 1] um, scaled by ell -> x_hat in [-1, 1]
+X_LEFT, X_RIGHT = -1.0, 1.0
+
+# Smoothed step doping profile C(x) (scaled by C_tilde), abrupt junction
+# regularized with a tanh transition so the source term is differentiable.
+JUNCTION_WIDTH = 0.02   # transition width, in scaled x units
+
+def doping_profile(x):
+    """C_hat(x) = (Nd/C_tilde) for x>0 (n-side), -(Na/C_tilde) for x<0 (p-side)."""
+    return 0.5 * (Nd / C_tilde) * (1 + torch.tanh(x / JUNCTION_WIDTH)) \
+         - 0.5 * (Na / C_tilde) * (1 - torch.tanh(x / JUNCTION_WIDTH))
+
+# Ohmic contact boundary values for phi_hat (scaled by Ut), at equilibrium (Va=0):
+#   n-side contact: phi = Ut*ln(Nd/ni)      -> phi_hat = ln(Nd/ni)
+#   p-side contact: phi = -Ut*ln(Na/ni)     -> phi_hat = -ln(Na/ni)
+phi_bc_right = np.log(Nd / ni)     # at x = X_RIGHT (n-type)
+phi_bc_left  = -np.log(Na / ni)    # at x = X_LEFT  (p-type)
+
+# ------------------------------------------------------------
+# Reference analytic solution (depletion approximation), for validation.
+# For a step junction with equal doping, the depletion widths are equal;
+# outside the depletion region phi is flat (equal to contact value),
+# inside it phi is quadratic (matches lambda^2 phi'' = -C piecewise-constant).
+# We build this numerically by integrating the piecewise-constant charge
+# twice with matching at x=0, since Nd == Na here (symmetric junction).
+# ------------------------------------------------------------
+def analytic_reference(x_np):
+    """Depletion-approximation analytic solution for a symmetric step junction."""
+    # symmetric junction => depletion widths equal on both sides: xp = xn = xd
+    C_scaled = Nd / C_tilde  # = Na / C_tilde here
+    phi_bi = phi_bc_right - phi_bc_left           # built-in potential, scaled by Ut... (dimensionless here)
+    # solve xd from: phi_bi = (C_scaled/lambda^2) * xd^2   (standard depletion result, symmetric case)
+    xd = np.sqrt(phi_bi * lam**2 / C_scaled)
+    phi = np.zeros_like(x_np)
+    for i, x in enumerate(x_np):
+        if x <= -xd:
+            phi[i] = phi_bc_left
+        elif x < 0:
+            phi[i] = phi_bc_left + (C_scaled / (2*lam**2)) * (x + xd)**2
+        elif x < xd:
+            phi[i] = phi_bc_right - (C_scaled / (2*lam**2)) * (x - xd)**2
+        else:
+            phi[i] = phi_bc_right
+    return phi, xd
+
+
+# ============================================================
+# PHASE B -- Build the ansatz (Steps 3-4)
+# ============================================================
+
+class PhiNet(nn.Module):
+    """phi-Net: plain FCNN, tanh activations. No log-space trick needed --
+    the potential has a modest dynamic range (~phi_bi), unlike n, p."""
+    def __init__(self, width=64, depth=4):
+        super().__init__()
+        layers = [nn.Linear(1, width), nn.Tanh()]
+        for _ in range(depth - 1):
+            layers += [nn.Linear(width, width), nn.Tanh()]
+        layers += [nn.Linear(width, 1)]
+        self.net = nn.Sequential(*layers)
+        # Step 4: initialization -- Xavier/Glorot, standard and automatic
+        for m in self.net:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        return self.net(x)
+
+phi_net = PhiNet()
+
+
+# ============================================================
+# PHASE C -- Encode the physics as a loss (Steps 5-8)
+# ============================================================
+
+N_INT = 2048   # interior collocation points (Poisson-only: fewer needed than full DDNet)
+N_BC  = 2      # boundary points: just the two contacts in 1D
+
+def sample_interior(n):
+    """Step 5: random collocation points in the domain (mesh-free)."""
+    x = np.random.uniform(X_LEFT, X_RIGHT, size=(n, 1)).astype(np.float32)
+    return torch.tensor(x, requires_grad=True)
+
+def poisson_residual(x):
+    """Step 6: PDE residual via automatic differentiation.
+    lambda^2 * phi_hat'' - (-C(x)) = 0   i.e.   lambda^2*phi'' + C(x) = 0
+    (mobile carriers n,p omitted under the depletion approximation)."""
+    phi = phi_net(x)
+    dphi_dx  = torch.autograd.grad(phi, x, grad_outputs=torch.ones_like(phi),
+                                    create_graph=True)[0]
+    d2phi_dx2 = torch.autograd.grad(dphi_dx, x, grad_outputs=torch.ones_like(dphi_dx),
+                                     create_graph=True)[0]
+    C = doping_profile(x)
+    residual = lam**2 * d2phi_dx2 + C
+    return residual
+
+def boundary_loss():
+    """Step 7: Dirichlet (Ohmic) boundary residuals at the two contacts."""
+    x_bc = torch.tensor([[X_LEFT], [X_RIGHT]], dtype=torch.float32)
+    phi_bc_pred = phi_net(x_bc)
+    phi_bc_true = torch.tensor([[phi_bc_left], [phi_bc_right]], dtype=torch.float32)
+    return torch.mean((phi_bc_pred - phi_bc_true) ** 2)
+
+def total_loss():
+    """Step 8: assemble total loss = interior PDE MSE + boundary MSE."""
+    x_int = sample_interior(N_INT)
+    r = poisson_residual(x_int)
+    L_int = torch.mean(r ** 2)
+    L_bc  = boundary_loss()
+    return L_int + L_bc, L_int.item(), L_bc.item()
+
+
+# ============================================================
+# PHASE D -- Train (Steps 9-11)
+# ============================================================
+
+# Step 9: optimizer + decaying learning-rate schedule
+EPOCHS = 8000
+milestones = [2000, 4000, 5500, 7000]   # decay points (fewer than DDNet's 8 -- simpler problem)
+optimizer = torch.optim.Adam(phi_net.parameters(), lr=1e-2)
+scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.1)
+
+RESAMPLE_EVERY = 100   # Step 10: resample collocation points periodically
+
+print("\nTraining Poisson-only PINN...")
+for epoch in range(EPOCHS):
+    optimizer.zero_grad()
+    loss, l_int, l_bc = total_loss()
+    loss.backward()             # backprop through the AD graph (Step 10)
+    optimizer.step()
+    scheduler.step()
+
+    if epoch % 1000 == 0 or epoch == EPOCHS - 1:
+        print(f"  epoch {epoch:5d} | total loss {loss.item():.3e} "
+              f"| interior {l_int:.3e} | boundary {l_bc:.3e} "
+              f"| lr {scheduler.get_last_lr()[0]:.1e}")
+
+    # Step 11: (optional) early stop on convergence threshold
+    if loss.item() < 1e-8:
+        print(f"  Converged at epoch {epoch}, loss = {loss.item():.3e}")
+        break
+
+
+# ============================================================
+# PHASE E -- Evaluate (Step 12)
+# ============================================================
+
+x_eval = np.linspace(X_LEFT, X_RIGHT, 400).astype(np.float32)
+x_eval_t = torch.tensor(x_eval.reshape(-1, 1), requires_grad=False)
+with torch.no_grad():
+    phi_pred = phi_net(x_eval_t).numpy().flatten()
+
+phi_true, xd = analytic_reference(x_eval)
+
+# relative L1 error, as used throughout the paper
+rel_L1 = np.sum(np.abs(phi_pred - phi_true)) / np.sum(np.abs(phi_true))
+print(f"\nDepletion half-width (scaled units): {xd:.4f}")
+print(f"Relative L1 error vs. analytic depletion-approximation solution: {rel_L1*100:.3f}%")
+
+# Undo the scaling to physical units for reporting (phi_hat -> phi in Volts)
+phi_pred_V = phi_pred * Ut
+phi_true_V = phi_true * Ut
+x_eval_um  = x_eval * (ell * 1e4)   # cm -> um
+
+print("\nSample comparison (x [um], PINN phi [V], analytic phi [V]):")
+for i in range(0, len(x_eval), 50):
+    print(f"  x={x_eval_um[i]:+.3f}  phi_pinn={phi_pred_V[i]:+.4f}  phi_analytic={phi_true_V[i]:+.4f}")
+
+# Optional: quick validation plot
+try:
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(x_eval_um, phi_true_V, 'k-', lw=2, label="Analytic (depletion approx.)")
+    ax.plot(x_eval_um, phi_pred_V, 'r--', lw=2, label="PINN (phi-Net)")
+    ax.set_xlabel(r"$x\ [\mu m]$")
+    ax.set_ylabel(r"$\phi\ [V]$")
+    ax.set_title(f"Poisson-only PINN vs. analytic solution (rel. $L_1$ = {rel_L1*100:.2f}%)")
+    ax.legend()
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig("poisson_pinn_validation.png", dpi=150)
+    print("\nSaved plot to poisson_pinn_validation.png")
+except ImportError:
+    pass
