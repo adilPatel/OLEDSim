@@ -98,7 +98,7 @@ print("Using device:", device)
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REFERENCE_NPZ = os.path.join(_HERE, "devsim_reference_2.5V.npz")
 
-
+# TODO: Create the p-Net and n-Net, and then combine them with the phi-Net into a single model that solves the full DD equations
 # ============================================================
 # PHASE A -- Problem setup (Steps 1-2)
 # ============================================================
@@ -442,7 +442,7 @@ def evaluate():
 
 
 def plot(phi_pred_V, phi_true_V, rel_L1, history_epochs, history_losses,
-         filename="poisson_demo.png"):
+         filename="forward_demo.png"):
     """Plot both potentials together, plus the carrier densities and loss."""
     import matplotlib.pyplot as plt
 
@@ -493,7 +493,6 @@ def plot(phi_pred_V, phi_true_V, rel_L1, history_epochs, history_losses,
     fig.tight_layout()
     fig.savefig(filename, dpi=150)
     print("\nSaved plot to {0}".format(filename))
-    fig.show()
     return fig
 
 
