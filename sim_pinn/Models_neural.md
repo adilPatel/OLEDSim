@@ -325,6 +325,8 @@ trainable parameters.
   learned functions. Cost is linear in this number (measured: 0.094 / 0.181 /
   0.297 s per epoch at 2048 / 4096 / 8192, for three networks with second
   derivatives), so the halving is what makes a 20000-epoch CPU run practical.
+- **Collocation distribution.** Symmetric `Beta(0.5, 0.5)` (the arcsine
+  distribution) rather than uniform — see *Collocation sampling* below.
 - **Optimiser.** Adam, `lr = 1e-3`, decayed 3.3x at epochs
   5000/10000/14000/17000, for 20000 epochs. Both the rate and the epoch count
   changed from the Poisson-only stage (`lr = 1e-2`, 8000 epochs): the coupled
@@ -343,12 +345,84 @@ trainable parameters.
   `USE_GPU` and float64 are mutually exclusive and the code raises rather than
   silently mixing them.
 
+# Collocation sampling
+
+DDNet samples collocation points uniformly. That is a poor match for this
+device, because the solution's structure is concentrated at the two contacts.
+Measured on the DEVSIM reference, the fraction of each field's *total
+variation* lying in the outer 10 % at each end:
+
+| field | `x < 0.1` (anode) | `x > 0.9` (cathode) |
+|---|---|---|
+| `u_n = -log(n_hat)` | **62.5 %** | 13.2 % |
+| `u_p = -log(p_hat)` | 0.8 % | **69.0 %** |
+| `\|phi_hat''\|` | 3.6 % | 26.3 % |
+
+Two thirds of each density's structure sits in a single 10 % band, and **the
+two carriers need opposite ends** — `n` rises steeply at the anode where it is
+injected, `p` falls steeply at the cathode. Uniform sampling puts only 20 % of
+points in those two bands combined, so the layers that dominate the solution
+are the least resolved part of the domain.
+
+> **Superseded — see the run 3 post-mortem.** The measurements in this section
+> are correct, but the inference drawn from them is not: they locate where the
+> *fields vary*, which is not where the *residual is hard to satisfy*. Beta
+> sampling was measured and regressed every metric, and `BETA_CONCENTRATION` is
+> back to `1.0` (uniform). The section is kept because the reasoning and its
+> refutation are both worth having on record.
+
+The collocation points are therefore drawn from a symmetric `Beta(a, a)` on
+`[0,1]` with `a = 0.5`, whose density is U-shaped and clusters at both ends at
+once. A one-sided bias toward the cathode would fix the holes and starve the
+electrons; the symmetric form serves both.
+
+| distribution | fraction in outer 10 % |
+|---|---|
+| uniform (`a = 1`) | 20.0 % |
+| `Beta(0.7, 0.7)` | 30.4 % |
+| **`Beta(0.5, 0.5)`** | **41.0 %** |
+| `Beta(0.4, 0.4)` | 48.0 % |
+| `Beta(0.3, 0.3)` | 56.5 % |
+
+`a = 0.5` is the **arcsine distribution** — the limiting density of Chebyshev
+nodes and the standard choice for boundary-layer clustering. It is picked from
+the geometry of the problem class rather than tuned to this device, which is
+what makes it generalisable: another device with contact layers at both ends
+gets the right treatment with no retuning. Setting `a = 1` recovers the
+previous uniform behaviour exactly.
+
+**Implementation.** Sampled via the closed form `sin^2(pi*U/2) ~ Beta(1/2,1/2)`
+for `U ~ Uniform(0,1)`, verified against a reference Beta sampler (quantiles
+agree to 3-4 digits). This is preferred over `torch.distributions.Beta` because
+it is a single elementwise op on the `torch.rand` call already being made: it
+stays on-device, honours the float64 default (torch's Beta returns float32),
+and adds no host-to-device transfer to a function that runs every epoch.
+Measured cost is unchanged at 0.15 s/epoch.
+
+The `Beta(a<1)` density diverges at 0 and 1, so points can land arbitrarily
+close to the contacts — which is the intent — but the endpoints themselves are
+clamped out, since `x` exactly 0 or 1 would duplicate the Dirichlet points
+imposed separately in `boundary_loss()`.
+
+**Interaction with the loss weights.** Non-uniform sampling changes what
+`mean(r^2)` estimates: it is no longer the domain average but an average
+weighted by the sampling density. That is precisely the desired effect here,
+and it overlaps with what `W_CONT_P` was doing by hand — on a synthetic cathode
+layer, switching uniform → `Beta(0.5,0.5)` raises `mean(r^2)` there by **5.7x**
+on its own. The difference is that the sampling achieves it from the geometry
+of the problem, whereas `W_CONT_P` is a constant reverse-engineered from one
+observed failure. See *Loss weights* below.
+
+Note that `L_Jtot` is unaffected by this reasoning: it is the *variance* of
+`Jn+Jp` across the batch, a statement of constancy rather than a domain
+average, and so remains valid under any sampling distribution.
+
 # Loss
 
 Following DDNet Eq. 11, the total loss sums interior PDE residuals and boundary
 residuals, each a mean-squared error:
 
-    L_tot = L_poisson + W_CONT*(L_Jn + L_Jp) + W_JTOT*L_Jtot + W_BC*L_BC
+    L_tot = L_poisson + W_CONT_N*L_Jn + W_CONT_P*L_Jp + W_JTOT*L_Jtot + W_BC*L_BC
 
 # Loss weights
 
@@ -383,12 +457,46 @@ an unweighted sum, since `|Jp_hat|/|Jn_hat| ~ 1e-5` near the cathode puts the
 hole term at ~1e-5 against a total loss of ~2.5e-2.
 
 The two continuity equations therefore get **separate** weights,
-`W_CONT_N = 1.0` and `W_CONT_P = 1e3`. The hole weight is set from the error it
-has to make visible rather than by trial: a 10x-too-high `p` beyond 80 nm gives
-`mean r_p^2 = 4.7e-4`, so at `1e3` it contributes 0.47 to the loss — about 20x
-the Poisson term, a penalty large enough that the optimiser cannot ignore it.
-Note that a small `cont_p` early in training is *not* evidence the weight is
-inert: the p-Net starts close to satisfying hole continuity and drifts later.
+`W_CONT_N = 1.0` and `W_CONT_P = 1e3`.
+
+## What the weight does, arithmetically
+
+A weight is nothing more than a scalar multiplying one mean-squared residual in
+the sum. Writing `r_p = Jp_hat' + R_hat` for the hole continuity residual at a
+collocation point, the term is `L_Jp = mean(r_p^2)`, and the total is
+
+    L_tot = L_poisson + 1*L_Jn + 1000*L_Jp + 1*L_Jtot + 1*L_BC
+
+The optimiser descends `dL_tot/dtheta`, so multiplying a term by 1000
+multiplies its gradient contribution by 1000. **Nothing about the term itself
+changes** — not its minimum, not where it vanishes. Only how much the optimiser
+*cares* about it relative to the terms it competes with.
+
+Concretely, with `p` about 10x too high beyond 80 nm, `mean(r_p^2) = 4.7e-4`:
+
+| weight | contribution to `L_tot` | as a share of the ~2.5e-2 total |
+|---|---|---|
+| `1` | 4.7e-4 | **1.9 %** — cheaper to improve Poisson instead, so it is ignored |
+| `1e3` | 0.47 | **~20x the entire Poisson term** — now the cheapest thing to fix |
+
+So the weight is a pure rescaling of one gradient channel. At convergence
+`cont_p` reached 7.2e-9, contributing `7.2e-9 x 1e3 = 7.2e-6` — negligible. It
+mattered during descent, not at the solution. Relatedly, a small `cont_p` early
+in training is *not* evidence the weight is inert: the p-Net starts close to
+satisfying hole continuity and drifts later.
+
+**The weakness of this technique** is that `1e3` was reverse-engineered from one
+observed failure, on one device, at one bias. It is a constant fitted to a
+symptom, and there is no reason to expect it to transfer to a different device.
+
+This section previously proposed Beta sampling as the better fix, on the grounds
+that it addresses the *cause* — too few collocation points where the solution
+varies fastest — from the geometry of the problem class. That was measured in
+run 3 and **it regressed every metric**, so the claim is withdrawn: too few
+points where the solution *varies* was not the cause. The genuine principled
+replacement, for this weight and for `W_POISSON` together, is adaptive weighting
+driven by gradient statistics rather than any constant chosen in advance (see
+*Next steps*).
 
 `W_BC = 1.0` was measured in the Poisson-only stage: raising it made the solve
 markedly worse (1.74% → 35.3% at 10, → 64.7% at 100, → 78.6% at 1000), because
@@ -529,11 +637,407 @@ of a deliberate modelling choice, not a fitting failure.
 contacts, which is the signature of a curvature the network is smoothing rather
 than a boundary being missed.
 
+## Run 3 — Beta(0.5, 0.5) collocation sampling
+
+Non-uniform collocation, as described in *Collocation sampling*. Everything else
+is held at run 2's settings, including `W_CONT_P = 1e3`, so the sampling change
+is measured as a single variable. 20000 epochs, 52 min on CPU, 0.155 s/epoch —
+sampling cost is unchanged, as predicted.
+
+**This run made every metric worse. The hypothesis in *Collocation sampling*
+above is wrong for this device, and the reason is instructive.**
+
+| epoch | total | poisson | cont_n | cont_p | Jtot | bc | lr |
+|---|---|---|---|---|---|---|---|
+| 0 | 1.870e+02 | 3.767e-02 | 1.243e-03 | 2.487e-07 | 2.606e-05 | 1.869e+02 | 1e-3 |
+| 2000 | 2.240e-01 | 1.929e-01 | 2.421e-03 | 1.377e-07 | 4.989e-06 | 2.848e-02 | 1e-3 |
+| 6000 | 1.104e-01 | 9.566e-02 | 3.768e-04 | 3.695e-08 | 9.078e-07 | 1.434e-02 | 3e-4 |
+| 10000 | 7.242e-02 | 6.270e-02 | 1.981e-03 | 2.283e-08 | 1.750e-04 | 7.547e-03 | 9e-5 |
+| 14000 | 5.521e-02 | 4.896e-02 | 2.469e-04 | 1.432e-08 | 1.450e-07 | 5.989e-03 | 2.7e-5 |
+| 19999 | 4.424e-02 | 3.956e-02 | 1.889e-04 | 1.015e-08 | 8.163e-08 | 4.482e-03 | 8.1e-6 |
+
+| quantity | run 2 (uniform) | **run 3 (Beta)** | change |
+|---|---|---|---|
+| `phi` rel. L1 | 1.577 % | **5.534 %** | **3.5x worse** |
+| `phi` max abs error | 6.97e-3 V | **2.33e-2 V** | 3.3x worse |
+| `n` rel. L1 (log10) | 0.484 % | **0.738 %** | 1.5x worse |
+| `p` rel. L1 (log10) | 0.874 % | **1.531 %** | 1.8x worse |
+| `Jn+Jp` spread | 0.08 % | **0.06 %** | unchanged |
+| converged Poisson term | 2.35e-2 | **3.96e-2** | 1.7x worse |
+
+The loss is worse at *every* logged epoch, not just at the end, so this is not a
+matter of needing longer — the run is on a worse trajectory from epoch 2000.
+
+# Why it failed: the diagnosis was right, the inference from it was not
+
+The *Collocation sampling* section above justifies `Beta(0.5,0.5)` by where the
+**total variation of the densities** lives. That measurement is correct. The
+error was treating it as a proxy for where the **loss** needs resolution, and
+those are different places. Two measurements pin it down.
+
+First, what the sampling actually changes (200k samples, `|phi_hat''|`
+interpolated from the reference):
+
+| distribution | mean `\|phi_hat''\|` at sampled points | fraction of points in mid-device `[0.2, 0.8]` |
+|---|---|---|
+| uniform | 41.0 | **59.9 %** |
+| `Beta(0.5,0.5)` | 48.3 | **41.0 %** |
+
+Beta buys an 18 % increase in the curvature it sees, and pays for it by removing
+a third of the mid-device points.
+
+Second, that mid-device region is exactly where run 2's error already was. Run 2
+noted this and it was recorded above without its consequence being drawn: *"the
+`phi` error peaks mid-device (~7e-3 V near 50 nm, panel b) rather than at the
+contacts, which is the signature of a curvature the network is smoothing rather
+than a boundary being missed."* Run 3's pointwise profile confirms the
+prediction that follows — the contacts are now fitted well and the error has
+migrated into the thinned-out middle:
+
+| x [nm] | `phi` PINN | `phi` DEVSIM | error |
+|---|---|---|---|
+| 4 | +0.46744 | +0.46603 | 1.4e-3 |
+| **48** | **+0.17179** | **+0.15043** | **2.1e-2** |
+| **58** | **+0.12054** | **+0.09728** | **2.3e-2** |
+| 94 | -0.00145 | -0.00585 | 4.4e-3 |
+
+So the sampling change worked as designed and the design was aimed at the wrong
+target. **Contact resolution was not the binding constraint; mid-device
+curvature was.** Poisson stayed 89 % of the converged loss (3.96e-2 of 4.42e-2)
+— the same diagnosis as runs 1 and 2, now with a larger value.
+
+The general lesson, worth keeping because it applies to the next idea as well:
+*where a field varies most* and *where the residual is hardest to satisfy* are
+not the same set, and only the second one justifies spending collocation points.
+The densities' variation is at the contacts, but their log parametrisation
+already handles that — `u_n` and `u_p` are smooth and O(10) there. Poisson has
+no such reparametrisation, and its difficulty is spread across the device.
+
+Note also that `cont_p` fell to 1.0e-8 (run 2: 7.2e-9) and `Jtot` spread stayed
+at 0.06 %, so the claim that Beta sampling would *partly substitute* for
+`W_CONT_P` is untested by this run rather than confirmed: the hole equation was
+comfortably satisfied in both.
+
+**Status: reverted.** `BETA_CONCENTRATION` is restored to `1.0` (uniform) as the
+default, with the Beta path retained since the implementation is sound and the
+argument may hold for a device whose difficulty really is at the contacts.
+
+## Run 4 — `W_POISSON = 10`, uniform sampling
+
+Run 3's post-mortem says the binding constraint is the Poisson residual and that
+it is not a sampling problem. The direct test of that claim is to leave sampling
+uniform and simply weight Poisson up. Everything else is held at run 2's
+settings (`W_CONT_P = 1e3`, `BETA = 1.0`, 4096 points, 20000 epochs); the loss is
+
+    L_tot = 10*L_poisson + L_Jn + 1e3*L_Jp + L_Jtot + L_BC
+
+20000 epochs, 70 min (sharing a CPU with the run 5 variant; ~52 min solo).
+
+**This is the best configuration measured so far, by a wide margin.**
+
+The `poisson` column below is the *raw, unweighted* `mean(r_poisson^2)`, so it is
+directly comparable with runs 1-3. The `total` column is **not** comparable, as
+it contains the 10x factor.
+
+| epoch | total | poisson (raw) | cont_n | cont_p | Jtot | bc | lr |
+|---|---|---|---|---|---|---|---|
+| 0 | 1.905e+02 | 3.966e-02 | 7.511e-03 | 2.396e-07 | 2.858e-04 | 1.901e+02 | 1e-3 |
+| 2000 | 3.470e-01 | 2.219e-02 | 6.768e-03 | 8.794e-08 | 7.146e-05 | 1.182e-01 | 1e-3 |
+| 6000 | 1.023e-01 | 7.349e-03 | 2.575e-03 | 3.768e-08 | 1.106e-05 | 2.617e-02 | 3e-4 |
+| 10000 | 3.255e-02 | 2.398e-03 | 9.075e-04 | 1.527e-08 | 1.994e-05 | 7.623e-03 | 9e-5 |
+| 14000 | 1.814e-02 | 1.523e-03 | 2.179e-04 | 5.800e-09 | 1.765e-06 | 2.685e-03 | 2.7e-5 |
+| 18000 | 1.154e-02 | 9.779e-04 | 2.171e-04 | 3.038e-09 | 7.437e-08 | 1.536e-03 | 8.1e-6 |
+| 19999 | 9.053e-03 | **7.541e-04** | 3.040e-04 | 2.427e-09 | 3.352e-07 | 1.205e-03 | 8.1e-6 |
+
+Accuracy against DEVSIM at 2.5 V, against the previous best:
+
+| quantity | run 2 (best prior) | run 3 (Beta) | **run 4 (`W_POISSON=10`)** | vs run 2 |
+|---|---|---|---|---|
+| `phi` rel. L1 | 1.577 % | 5.534 % | **0.478 %** | **3.3x better** |
+| `n` rel. L1 (log10) | 0.484 % | 0.738 % | **0.316 %** | **1.5x better** |
+| `p` rel. L1 (log10) | 0.874 % | 1.531 % | **0.886 %** | unchanged |
+| `n` rel. L1 (linear) | ~10 % | 14.641 % | **4.015 %** | **2.5x better** |
+| `p` rel. L1 (linear) | 7.415 % | 18.045 % | **3.520 %** | **2.1x better** |
+| raw Poisson term | 2.35e-2 | 3.96e-2 | **7.54e-4** | **31x lower** |
+| `Jn+Jp` spread | 0.08 % | 0.06 % | 0.22 % | slightly worse |
+| **terminal current vs DEVSIM** | 6.9 % | — | **0.26 %** | **26x better** |
+
+The terminal current is the headline. Runs 1-3 all landed ~7 % away from
+DEVSIM's +1.6256e-04 A/cm²; run 4 gives +1.6298e-04 A/cm², i.e. **0.26 %**. That
+is the number the device is actually characterised by, and it was the quantity
+least improved by everything tried before.
+
+# Why this worked, and why it is not merely "tuning a weight"
+
+The obvious objection is that this is the same reverse-engineered-constant
+technique criticised under *Loss weights*, and it is worth being precise about
+why it is not the same thing.
+
+`W_CONT_P = 1e3` was fitted to a *symptom*: the p-Net flattened, so the hole
+term was multiplied until it stopped. `W_POISSON = 10` follows from a
+*measurement* that was already in this document across three runs — Poisson was
+94 %, 94 % and 89 % of the converged loss respectively, while being the term
+whose residual is intrinsically hardest (`phi_hat''` spans 0.83..169). A term
+that dominates the loss but is still the least converged is under-weighted
+relative to its difficulty, not over-weighted by its share.
+
+Two checks that it is a genuinely better solution and not a redistribution of
+error:
+
+- **The BC term improved too**, 1.14e-2 at epoch 8000 down to 1.21e-3 at
+  convergence, rather than being starved to buy the Poisson reduction. Had the
+  weight simply traded one term for another, this is where it would show.
+- **The accuracy metrics moved with the residual.** A lower residual is only
+  meaningful if the DEVSIM-scored error follows, and `phi`, `n` and both linear
+  density errors all improved together. (Run 3 is the cautionary case: a
+  plausible loss-side story that pointed the wrong way.)
+
+`W_BC = 1.0` remains correct — this is not a contradiction of the earlier
+finding that raising `W_BC` is harmful. Raising `W_BC` upweights a term that is
+already easy to satisfy (a two-point Dirichlet match); raising `W_POISSON`
+upweights the one that is not.
+
+**Caveat, stated plainly:** `10` itself is not derived, only its direction is.
+The principled version of this is adaptive weighting that sets the balance from
+the gradient statistics during training rather than from a constant chosen in
+advance — see *Next steps*.
+
+The one metric that did not improve is the `Jn+Jp` spread (0.08 % → 0.22 %),
+which is expected: `W_JTOT` was left at 1.0 while Poisson went to 10, so the
+constancy constraint is now relatively 10x weaker. At 0.22 % it remains a
+well-satisfied constraint, and the terminal current it produces is 26x closer to
+DEVSIM, so nothing was actually lost.
+
+The `p` log error is unchanged at ~0.886 %, consistent with the run 2 finding
+that the remaining hole discrepancy is the *missing minority boundary condition*
+at the cathode — a modelling choice that no loss weight can address.
+
+## Run 5 — Fourier-feature input embedding (negative result)
+
+Run 3's post-mortem established that the difficulty is the Poisson residual.
+Run 4 addressed that by reweighting. Run 5 tests the other candidate
+explanation, which was that the difficulty is one of *representation*: a tanh
+FCNN under Xavier init emits output slopes of order 1-10, and the boundary
+layers in `u_n`, `u_p` reach slopes of ~540 in scaled units, so the optimiser
+must inflate first-layer weights by ~2 decades to reach them.
+
+The standard fix is a fixed random Fourier-feature embedding (Tancik et al.
+2020; applied to stiff PINNs by Wang, Wang & Perdikaris 2021), which supplies
+those frequencies at initialisation instead:
+
+    x -> [sin(2*pi*B*x), cos(2*pi*B*x)],    B ~ N(0, sigma^2),  sigma = 1.0
+
+32 frequencies, so the first layer takes 64 inputs; 50,115 parameters against
+the baseline's 38,019. Uniform sampling, `W_POISSON = 1`, everything else at run
+2's settings. 20000 epochs, 86 min.
+
+**It is worse than the plain FCNN on every accuracy metric.**
+
+| quantity | run 2 (plain FCNN) | **run 5 (Fourier)** | run 4 (best) |
+|---|---|---|---|
+| `phi` rel. L1 | 1.577 % | **6.956 %** | 0.478 % |
+| `n` rel. L1 (log10) | 0.484 % | **0.967 %** | 0.316 % |
+| `p` rel. L1 (log10) | 0.874 % | **2.746 %** | 0.886 % |
+| `p` rel. L1 (linear) | 7.415 % | **41.170 %** | 3.520 % |
+| raw Poisson term | 2.35e-2 | **1.05e-2** | 7.54e-4 |
+| terminal current vs DEVSIM | 6.9 % | **33.0 %** | 0.26 % |
+
+The terminal current is the clearest failure: +1.0900e-04 A/cm² against DEVSIM's
++1.6256e-04, a 33 % shortfall, by far the worst of any run.
+
+# Why the embedding hurt, and what the ~540 slopes actually mean
+
+Note first the diagnostic trap this run walked into. Run 5's raw Poisson term
+(1.05e-2) is *better* than run 2's (2.35e-2), while its `phi` error is **4.4x
+worse**. A lower residual on the sampled collocation points bought a worse
+solution — the same lesson as run 3, and the reason accuracy is always scored
+against DEVSIM here rather than inferred from the loss.
+
+The mechanism is visible from epoch 0: `cont_n` starts at **2.36e4**, against
+1.24e-3 for the plain FCNN — seven orders of magnitude worse. The continuity
+residual contains `n_hat' = -u_n'*n_hat`, so a high-frequency `u_n` at
+initialisation produces enormous spurious currents. The run spends most of its
+budget recovering from its own starting point (`cont_n` is still 1.46 at epoch
+2000, and the `bc` term only reaches 1e-5 by relaxing everything else).
+
+The deeper error is in the premise. The ~540 slopes are real but they are
+confined to the outer **0.5 nm** at each contact — the last 1-2 mesh cells,
+immediately adjacent to the minority-carrier pins the networks are *deliberately
+not asked to fit* (see *Contact carrier densities*). They are the reference
+approaching a discontinuity, not structure the network needs to represent. Away
+from those cells the fields are smooth, and `phi` in particular is a gentle ramp
+whose difficulty is large-but-**low-frequency** curvature (`phi_hat''` up to 169,
+but no oscillation anywhere in the domain).
+
+Fourier features are the right tool for genuinely high-frequency targets. This
+device has none. The embedding added spectral capacity the problem cannot use
+and destroyed the smooth-function prior that made the plain tanh FCNN a good fit
+in the first place.
+
+**Recorded as a dead end.** The `FourierFCNN` class is not added to
+`forward_demo.py`; it lived only in the experiment harness.
+
+## Run 6 — `W_POISSON = 30` (sweep)
+
+Run 4 established the direction but not the magnitude. This is the next sweep
+point, identical in every other respect. 20000 epochs, 50 min.
+
+| epoch | total | poisson (raw) | cont_n | cont_p | Jtot | bc | lr |
+|---|---|---|---|---|---|---|---|
+| 2000 | 4.082e-01 | 6.353e-03 | 2.936e-02 | 6.757e-08 | 1.269e-03 | 1.869e-01 | 1e-3 |
+| 6000 | 1.100e-01 | 2.195e-03 | 3.529e-03 | 3.671e-08 | 1.527e-05 | 4.062e-02 | 3e-4 |
+| 10000 | 5.570e-02 | 7.074e-04 | **1.745e-02** | 1.710e-08 | 2.051e-04 | 1.680e-02 | 9e-5 |
+| 14000 | 4.155e-02 | 4.651e-04 | **1.823e-02** | 6.488e-09 | 5.901e-05 | 9.300e-03 | 2.7e-5 |
+| 18000 | 1.385e-02 | 3.608e-04 | 7.525e-04 | 3.411e-09 | 1.791e-06 | 2.267e-03 | 8.1e-6 |
+| 19999 | 1.080e-02 | **2.815e-04** | 6.492e-04 | 2.689e-09 | 1.185e-06 | 1.702e-03 | 8.1e-6 |
+
+| quantity | run 4 (`W_POISSON=10`) | **run 6 (`=30`)** |
+|---|---|---|
+| `phi` rel. L1 | 0.478 % | **0.416 %** |
+| `n` rel. L1 (log10) | 0.316 % | **0.311 %** |
+| `p` rel. L1 (log10) | 0.886 % | 0.913 % |
+| `n` rel. L1 (linear) | 4.015 % | 4.247 % |
+| `p` rel. L1 (linear) | 3.520 % | **3.277 %** |
+| raw Poisson term | 7.54e-4 | **2.82e-4** |
+| `Jn+Jp` spread | 0.22 % | **0.05 %** |
+| terminal current vs DEVSIM | 0.26 % | **0.67 %** |
+
+**The two are close to indistinguishable.** `phi` is 13 % better at 30 and the
+current constancy recovers to 0.05 % (better than every earlier run), but the
+terminal current is 2.6x further from DEVSIM (0.67 % vs 0.26 %) and `p` in log
+space is marginally worse. Neither dominates; the curve is flat between 10 and
+30, which is itself the useful finding — the result is **not** sensitive to the
+exact value, so `W_POISSON = 10` is not a knife-edge constant.
+
+Worth noting for anyone reading the loss traces: `cont_n` shows large transient
+excursions at 30 (1.75e-2 and 1.82e-2 at epochs 10000 and 14000, against
+9.08e-4 for run 4 at epoch 10000) before settling to 6.49e-4. Upweighting
+Poisson does destabilise electron continuity in mid-training, and the effect is
+stronger at 30 than at 10. It resolved here, but it is the mechanism that will
+eventually bound the weight from above — which is what the `W_POISSON = 100`
+sweep point is testing.
+
+## Runs 7-8 and the complete `W_POISSON` sweep
+
+Runs 4 and 6 established the direction and showed 10 and 30 were near-tied, so
+the sweep was completed at 3 and 100. All five points are identical apart from
+the weight: uniform sampling, `W_CONT_P = 1e3`, 4096 points, 20000 epochs.
+
+| `W_POISSON` | `phi` rel. L1 | `n` (log10) | `p` (log10) | `n` (lin) | `p` (lin) | raw Poisson | `Jn+Jp` spread | current vs DEVSIM |
+|---|---|---|---|---|---|---|---|---|
+| 1 (run 2) | 1.577 % | 0.484 % | **0.874 %** | ~10 % | 7.415 % | 2.35e-2 | 0.08 % | 6.9 % |
+| 3 (run 7) | 0.620 % | 0.325 % | 0.898 % | 4.442 % | 3.697 % | 7.35e-4 | 0.14 % | **0.44 %** |
+| 10 (run 4) | 0.478 % | 0.316 % | 0.886 % | 4.015 % | 3.520 % | 7.54e-4 | 0.22 % | 0.26 % |
+| 30 (run 6) | 0.416 % | 0.311 % | 0.913 % | 4.247 % | 3.277 % | 2.82e-4 | 0.05 % | 0.67 % |
+| **100 (run 8)** | **0.222 %** | **0.307 %** | 0.920 % | **3.770 %** | **3.169 %** | **3.48e-5** | **0.02 %** | 0.78 % |
+
+**`W_POISSON = 100` is the best configuration measured.** It wins `phi` (0.222 %,
+a **7.1x** improvement on run 2 and 2.2x on the next best), `n` in both metrics,
+`p` in linear space, the raw Poisson residual (**675x** below run 2), and the
+current constancy (0.02 %).
+
+Every metric except two improves monotonically with the weight across the whole
+sweep. The exceptions are worth stating rather than burying:
+
+- **`p` in log space is flat-to-slightly-worse** (0.874 % → 0.920 %). This is the
+  minority-carrier boundary condition again, and it is the one quantity no loss
+  weight touches — exactly as run 4 predicted and for the reason given under
+  *Contact carrier densities*. The variation across the whole sweep is 5 %
+  relative, i.e. noise against the 3-7x moves elsewhere.
+- **The terminal current is non-monotonic**: 6.9 % → 0.44 % → 0.26 % → 0.67 % →
+  0.78 %, with the best value at `W = 10`. All of 3-100 are within 1 % and the
+  ordering among them is not obviously meaningful at a single seed, but it is
+  the one respect in which 100 is not the best point, and it is the quantity the
+  device is characterised by. See the caveat below.
+
+# The mid-training `cont_n` transients were a red herring
+
+Runs 6 and 8 both show large `cont_n` excursions in mid-training — peaks of
+7.67e-1 and 6.72e-1 respectively, against 6.77e-3 for run 4 — which at epoch
+8000 looked like the weight destabilising electron continuity and bounding
+`W_POISSON` from above. Measured at matched epochs, the trend was clean:
+
+| `W_POISSON` | Poisson @8000 | `cont_n` @8000 | `cont_n` peak |
+|---|---|---|---|
+| 3 | 3.84e-3 | 7.27e-3 | 3.94e-2 |
+| 10 | 4.35e-3 | 2.77e-3 | 6.77e-3 |
+| 30 | 1.27e-3 | 7.03e-3 | 7.67e-1 |
+| 100 | 1.85e-4 | 2.05e-2 | 6.72e-1 |
+
+**That reading was wrong.** The excursions all occur during the `lr = 1e-3` and
+`3e-4` phases and vanish once the schedule decays: by epoch 18000, `W = 100` has
+`cont_n = 9.35e-5`, the *lowest* of any run, and it converges to 9.89e-5. The
+transients are an interaction between the weight and the early learning rate,
+not a stability ceiling — a larger `W_POISSON` makes the loss surface stiffer,
+so the same step size overshoots, and the decay fixes it.
+
+The general point: **a mid-training loss trace is not evidence about the
+converged solution**, particularly under a decaying schedule. This is the third
+time in this series that a plausible loss-side inference pointed the wrong way
+(run 3's sampling argument, run 5's lower-Poisson-worse-`phi`, and now this), and
+the discipline that caught all three is the same — score against DEVSIM, at
+convergence, and treat the residual as a description of the mechanism only.
+
+# Caveats on adopting 100
+
+Stated plainly, because the sweep is a single seed and the improvements are
+real but the extrapolation is not established:
+
+1. **The sweep has not turned over.** 100 is the best point measured, not a
+   measured optimum — the curve is still improving at the edge of the range. The
+   honest statement is "≥100 is better than ≤30", and 300/1000 are untested.
+2. **The terminal current disagrees with the other metrics**, peaking at
+   `W = 10`. With `phi` improving 2x from 10 to 100 while the current worsens
+   0.5 %, the balance favours 100, but a device-engineering use that cares only
+   about terminal current has a defensible reason to prefer 10.
+3. **Single seed.** None of these runs is repeated, and the `p` log-space
+   differences (0.874-0.920 %) are almost certainly within seed noise. The `phi`
+   and Poisson trends are far too large to be noise; the fine ordering is not.
+
+`W_POISSON = 100` is adopted in `forward_demo.py` on the strength of the `phi`,
+`n`, Poisson and current-constancy improvements, all of which are large and
+monotonic across a 100x range of the weight.
+
 ## Next steps
 
-The obvious lever for the remaining `phi` error is **non-uniform collocation
-weighted toward the cathode**: uniform sampling under-resolves the region
-carrying nearly all the curvature. Increasing `W_CONT_P` further is *not*
-indicated — `cont_p` is already at the level where the hole equation is
-satisfied, and the residual `p` discrepancy is a missing boundary condition
-rather than an under-weighted residual.
+Done, and recorded above:
+
+- ~~Run 3 to convergence~~ — it **regressed**; reverted to uniform sampling.
+- ~~Sweep `W_POISSON`~~ — five points, 1 to 100. `W_POISSON = 100` adopted.
+- ~~Fourier-feature embedding~~ — tested (run 5) and **worse on every metric**;
+  a dead end for this device, and not added to `forward_demo.py`.
+
+Open, in rough priority order:
+
+1. **Extend the sweep to 300 and 1000.** The curve had not turned over at 100,
+   so the optimum is not yet bracketed. This is the cheapest outstanding item
+   and it decides whether 100 is a resting point or just the edge of the range
+   that happened to be tested. Watch the terminal current specifically: it is
+   already drifting the wrong way (0.26 % at 10 → 0.78 % at 100) while `phi`
+   improves, so the two metrics may cross.
+2. **Repeat the best configuration at 2-3 seeds.** Everything above is a single
+   seed. The large trends (`phi` 7.1x, Poisson 675x) are far outside plausible
+   seed noise, but the fine ordering between 10/30/100 on `p` and on the
+   terminal current is not, and it is currently being read as signal.
+3. **Replace the hand-set weights with adaptive weighting.** `W_POISSON` and
+   `W_CONT_P` are both constants chosen in advance, and the sweep above shows
+   how much the answer depends on one of them. The learning-rate-annealing
+   scheme of Wang, Teng & Perdikaris (2021) sets each weight from the running
+   ratio of gradient magnitudes, deriving both from the training dynamics and
+   removing the two magic numbers together. This is the principled end-point of
+   what runs 4-8 establish empirically, and it subsumes items 1 and 4.
+4. **Lower `W_CONT_P`** (1, 1e1, 1e2). Still *untested* rather than answered:
+   `cont_p` has been ~1e-9 to 1e-8 at convergence in every run to date, so the
+   hole equation is comfortably satisfied throughout and no run has probed
+   whether the weight is still doing work.
+5. **Revisit the lr schedule now that `W_POISSON` is large.** The mid-training
+   `cont_n` excursions at `W >= 30` are a weight/step-size interaction that the
+   decay eventually cleans up; a lower initial lr, or a warmup, might avoid
+   spending several thousand epochs recovering from them.
+6. **Soften the cathode hole density** in `devsim_reference_oled1.py`, the way
+   the bottom electron density was softened for `phi`. The residual `p`
+   discrepancy in the last few nm is a *missing boundary condition*, and the
+   sweep is now positive evidence for that reading rather than just an argument:
+   `p` in log space sat at 0.874-0.920 % across a 100x range of `W_POISSON`
+   while `phi` moved 7x. No loss weight touches it, because it is not a
+   weighting problem.

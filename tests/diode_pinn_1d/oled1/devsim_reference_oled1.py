@@ -1,13 +1,15 @@
 """
-devsim_reference.py
+devsim_reference_oled1.py
 
-Generate the DEVSIM drift-diffusion reference solution that the Poisson PINN
-is validated against.
+Generate the DEVSIM drift-diffusion reference solution that the coupled
+drift-diffusion PINN (sim_pinn/forward_demo.py) is validated against.
 
-The device is a 100 nm undoped organic layer with two Ohmic contacts, built
-from the same ``core``/``devsim_backend`` machinery as oled1 (sim_dd). It is
-OLED1's contact set with one deliberate change: the bottom contact's electron
-density is reduced from 1e25 to 1e17 cm^-3.
+This test case is called "oled1" within diode_pinn_1d, but it is NOT the same
+device as sim_dd's OLED1 (tests/diode_1d/oled1): it is a 100 nm undoped organic
+layer with two Ohmic contacts, built from the same ``core``/``devsim_backend``
+machinery as sim_dd's OLED1, with one deliberate change carried over from that
+device -- the bottom contact's electron density is reduced from 1e25 to
+1e17 cm^-3.
 
 Why reduce it
 -------------
@@ -28,9 +30,9 @@ The sweep runs to 2.5 V so the PINN can be compared against the DEVSIM
 solution at that bias. Vbi is 2.0 V, applied as the anode's voltage_offset,
 following the convention in core/device.py.
 
-Running this writes ``devsim_reference_2.5V.npz`` containing the node
-positions and the Potential/Electrons/Holes profiles at 2.5 V (and at
-equilibrium), which poisson_demo.py loads.
+Running this writes ``oled1_devsim_reference_2.5V.npz`` (in this same folder)
+containing the node positions and the Potential/Electrons/Holes profiles at
+2.5 V (and at equilibrium), which sim_pinn/forward_demo.py loads.
 """
 
 import os
@@ -38,9 +40,12 @@ import sys
 
 import numpy as np
 
-# Make the sim_dd package importable when run as a plain script.
+# Make the sim_dd package importable when run as a plain script. This file
+# lives two directories below the repo root (tests/diode_pinn_1d/oled1/), so
+# three levels up gets back to the root, matching sim_pinn/forward_demo.py's
+# own path-resolution depth from tests/diode_pinn_1d/oled1/ to sim_pinn/.
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.dirname(_HERE)
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(_HERE)))
 sys.path.insert(0, os.path.join(_ROOT, "sim_dd"))
 
 from core import DDSolver, SweepConfig  # noqa: E402
@@ -56,7 +61,7 @@ BUILT_IN_VOLTAGE = 2.0
 # docstring). This is the one parameter changed from make_oled1.
 N_BOT_ELECTRONS = 1.0e17
 
-OUTPUT_NPZ = os.path.join(_HERE, "devsim_reference_2.5V.npz")
+OUTPUT_NPZ = os.path.join(_HERE, "oled1_devsim_reference_2.5V.npz")
 
 
 def make_device():
