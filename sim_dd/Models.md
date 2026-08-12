@@ -1,10 +1,10 @@
-### Overview of the Physical Models Used
+# Overview of the Physical Models Used
 
 This document describes some of the physical models employed by this program.
 
 ## Charge Injection and Boundary Models
 
-# Ohmic Contacts
+### Ohmic Contacts
 
 An Ohmic contact pins the electron and hole densities at the contact node to
 fixed values (Dirichlet boundary conditions for `ElectronContinuityEquation`/
@@ -33,14 +33,14 @@ the `Potential - (bias - V_offset)` residual as a `contact_node_model`.
 still reports the bulk drift-diffusion current through the contact for the
 I-V sweep, even though the residual itself is a simple density pin.
 
-# Thermionic Contacts
+### Thermionic Contacts
 
 A thermionic contact (`Contact(contact_type="thermionic")`) replaces the Ohmic
 Dirichlet density pin with a *field-dependent* thermionic injection current
 (Emtage-O'Dwyer / Scott-Malliaras), so the contact's carrier densities become
 solved unknowns rather than fixed parameters.
 
-## Physics
+### Physics
 
 - Coulomb capture radius: `r_c = q^2/(4*pi*eps*kT)` (~15.9 nm for F8BT).
 - Reduced electric field: `f = q*E*r_c/kT`.
@@ -114,11 +114,12 @@ is strongest. The magnitude is regularised as `sqrt(dV^2 + 1e-30)` rather than
 `abs(dV)`, since DEVSIM's derivative of `abs(x)` at `x=0` involves `sgn(0)`
 and raises an FPE.
 
-**On the `x_c = r_c/4` sampling point.** The specification evaluates `n`/`p` a
-distance `x_c` (~3.97 nm for F8BT) from the contact. This is *not* done here,
-for a structural reason: `ContactEquation::AssembleNodeEquation` places every
-Jacobian entry at the contact node's own row and column, so a density sampled
-at a distant node could only enter as a *lagged*, frozen quantity with no
+**On the `x_c = r_c/4` sampling point.** The literature specifies 
+that `n`/`p` are evaluated at a distance `x_c` (~3.97 nm for F8BT) 
+from the contact. This is *not* done here, for a structural reason: 
+`ContactEquation::AssembleNodeEquation` places every Jacobian entry 
+at the contact node's own row and column, so a density sampled at a distant 
+node could only enter as a *lagged*, frozen quantity with no
 Jacobian contribution -- precisely the kind of inconsistent Jacobian that
 previously drove this solve onto spurious branches. It was measured instead
 whether the distinction matters: over the 4 nm to `x_c`, the majority-carrier
@@ -126,7 +127,7 @@ whether the distinction matters: over the 4 nm to `x_c`, the majority-carrier
 therefore evaluated at the contact node, trading a few percent against a fully
 consistent, analytically differentiable Jacobian.
 
-## Implementation
+### Implementation
 
 `ReducedFieldExpression` and `BuildInjectionExpressions` (`common_physics.py`)
 assemble the expressions above as DEVSIM expression strings.
@@ -175,7 +176,7 @@ to zero. The degenerate root is not admissible.
 terminal current is directly comparable with the opposite contact's -- which
 is what makes the continuity check below meaningful.
 
-## How this ties into the solver
+### How this ties into the solver
 
 It is tempting to picture this as "compute the injected density `n_inj`, then
 use it as the boundary condition." That is *not* what happens, and the actual
@@ -242,10 +243,12 @@ the Ohmic contact would have pinned to -- so at equilibrium the Robin
 condition and the Dirichlet pin land on the same density. They only diverge
 once current flows and the balance pulls `Electrons@n0` away from `n_inj`.
 
-## Verification
+### Verification
 
-Current continuity now holds. Across the OLED2 sweep, comparing the current
-reported at the thermionic anode with that at the Ohmic cathode
+Owing to the injection current expression, it is imperative to verify
+that current continuity still holds when using thermionic contacts.
+Across the OLED2 sweep, comparing the current reported at the thermionic 
+anode was compared with that at the Ohmic cathode
 (`|I_top + I_bot| / max(|I_top|, |I_bot|)`), and separately checking that
 `Jn + Jp` is constant across every mesh edge:
 
@@ -286,7 +289,7 @@ near turn-on, refine the mesh at the thermionic contact and confirm the
 current has converged.** Above ~1.6 V the default mesh is already adequate.
 
 
-## Gummel preconditioning
+## #Gummel preconditioning
 
 For devices with a thermionic contact, `DevsimBackend.solve_equilibrium`
 runs a decoupled **Gummel iteration** before the coupled Newton solve:
