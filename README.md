@@ -14,7 +14,10 @@ This solves the drift-diffusion semiconductor equations using a conventional New
 - Implementing disorder-based density of states models, including field, temperature, and concentration-dependant mobilities.
 - Implementing carrier trapping.
 - Implementing excitons and internal quantum efficiency calculation.
+
+## Planned Goals
 - Implementing an optical outcoupling solver to calculate external quantum efficiency.
+- A custom C++-based solver to add more speed and flexibility.
 
 ## Solver 2: PINN Solver
 
@@ -22,7 +25,11 @@ In its current state, this encodes the drift-diffusion equations as loss functio
 
 ### Current Capabilities
 - Ohmic injection.
+- Loss weighting through the inverse Dirichlet method (Maddu et al, 2021).
 
 ### Work in Progress
-- Advancing the forward solver to include all the models listed in the DEVSIM-based solver. 
+- Thermionic injection.
+- More adaptive loss weighting schemes to make the solver more robust.
+
+### Planned Goals
 - Implementing an inverse solver to determine material and device parameters from desired characteristics.
