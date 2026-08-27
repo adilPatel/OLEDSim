@@ -45,9 +45,13 @@ import torch
 
 from sim_pinn import core
 
+# manual_seed fixes torch's RNG, which drives both the Xavier weight init and
+# the collocation draw; numpy's seed covers the reference handling.
 torch.manual_seed(0)
 np.random.seed(0)
 
+# set_default_dtype fixes the precision of every tensor created afterwards.
+# float64 here: this device is run on the CPU, which supports it.
 torch.set_default_dtype(torch.float64)
 
 # ============================================================
@@ -65,8 +69,14 @@ else:
             "Set torch.set_default_dtype(torch.float32) as well, and re-check "
             "the Langevin residual for underflow before trusting the result."
         )
+    # torch.accelerator is the backend-agnostic handle on whatever hardware
+    # is present (MPS on Apple silicon, CUDA on an NVIDIA box); falling back
+    # to the CPU when there is none. torch.device is just the tag that tells
+    # every tensor and module where to live.
     _accelerator = torch.accelerator.current_accelerator() if torch.accelerator.is_available() else None
     device = torch.device(_accelerator.type) if _accelerator is not None else torch.device("cpu")
+# The default dtype set above; every tensor built later is matched to it,
+# since torch refuses to combine tensors of differing dtype.
 dtype = torch.get_default_dtype()
 print("Using device:", device)
 
@@ -338,6 +348,7 @@ problem = core.build_problem(
 # ============================================================
 
 def train():
+    """Train the module-level problem under this script's schedule."""
     return core.train(
         problem, epochs=EPOCHS, n_int=N_INT, lr=LEARNING_RATE,
         milestones=MILESTONES, gamma=GAMMA, log_every=LOG_EVERY,
@@ -346,6 +357,7 @@ def train():
 
 
 def evaluate():
+    """Score the trained networks against the DEVSIM reference."""
     return core.evaluate(
         problem, x_hat=REF_X_HAT, phi_true_V=REF_POTENTIAL,
         n_true=REF_ELECTRONS, p_true=REF_HOLES, bias=REF_BIAS,
@@ -353,6 +365,7 @@ def evaluate():
 
 
 def report_currents():
+    """Report the terminal current, against the finite-differenced reference."""
     ref_x_cm = REF_X_NM * 1e-7
     return core.report_currents(
         problem, x_hat=REF_X_HAT, x_cm=ref_x_cm,
@@ -362,14 +375,17 @@ def report_currents():
 
 
 def report_thermionic():
+    """Report the injection balance at the thermionic anode."""
     return core.report_thermionic(problem)
 
 
 def plot(res, history_epochs, history_losses, filename=PLOT_PNG):
+    """Write the four-panel comparison figure."""
     return core.plot(res, history_epochs, history_losses, REF_X_NM, REF_BIAS, filename)
 
 
 def main():
+    """Train, score, and write the figure."""
     history_epochs, history_losses = train()
     res = evaluate()
     report_currents()

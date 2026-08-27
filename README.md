@@ -26,10 +26,14 @@ In its current state, this encodes the drift-diffusion equations as loss functio
 ### Current Capabilities
 - Ohmic injection.
 - Loss weighting through the inverse Dirichlet method (Maddu et al, 2021).
+- Loss weighting through SoftAdapt (Heydari et al, 2019).
 
 ### Work in Progress
-- Thermionic injection.
-- More adaptive loss weighting schemes to make the solver more robust.
+- Thermionic injection (not currently validated).
+- Increased current accuracy.
+- Testing against a wide variety of devices for a robust implementation.
 
 ### Planned Goals
-- Implementing an inverse solver to determine material and device parameters from desired characteristics.
+- Gaussian disorder models to more accurately simulate organic semiconductors.
+- Domain decomposition to more accurately simulate boundary and space charge layers.
+- An inverse solver to determine material and device parameters from desired characteristics.

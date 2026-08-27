@@ -1,10 +1,10 @@
 """
 reporting.py
 
-Scoring a trained problem: the comparison against a reference solution, the
-terminal current and its constancy, and the injection balance at any
-thermionic contact. All output is in physical units, converted back through
-the scaling dict.
+Scoring a trained problem: comparison against a reference solution, the
+terminal current and its constancy, the injection balance at any thermionic
+contact, and the figures for each. All output is in physical units, converted
+back through the scaling dict.
 """
 
 import numpy as np
@@ -24,29 +24,43 @@ def evaluate(problem, *, x_hat, phi_true_V, n_true, p_true, bias=None,
     """Compare the trained networks against a reference solution.
 
     x_hat : scaled evaluation coordinates, shape (N,).
-    phi_true_V, n_true, p_true : reference potential (V) and densities
-        (cm^-3) at those coordinates.
+    phi_true_V, n_true, p_true : reference potential (V) and densities (cm^-3)
+        at those coordinates.
+    bias : applied bias in volts, for the printed header only.
     interior : slice excluding contact nodes, where minority-carrier pins may
         be discontinuities the networks are deliberately not fit to.
+
+    Prints the error table and returns the predicted and reference profiles
+    together with the three headline errors.
     """
     scaling = problem.scaling
     Ut = scaling["Ut"]
     c_tilde = scaling["c_tilde"]
 
+    # as_tensor converts the numpy array without copying where it can; the
+    # (-1, 1) reshape makes it the column of points the networks expect, and
+    # dtype/device are matched to the trained model.
     x_eval_t = torch.as_tensor(
         x_hat.reshape(-1, 1), dtype=problem.dtype, device=problem.device)
-    # No autodiff needed: only the network values are read here.
+    # no_grad() switches off graph recording for everything inside: only
+    # network values are read here, no residual is differentiated, so this
+    # saves the memory a graph over all evaluation points would take.
     with torch.no_grad():
+        # .cpu() brings each result back to host memory, .numpy() views it as
+        # an array (legal only off-graph and on the CPU -- both hold here),
+        # .flatten() drops the trailing size-1 axis.
         phi_pred_hat = problem.phi_net(x_eval_t).cpu().numpy().flatten()
         n_pred_hat = problem.n_net.density(x_eval_t).cpu().numpy().flatten()
         p_pred_hat = problem.p_net.density(x_eval_t).cpu().numpy().flatten()
 
+    # Undo the scaling: phi by Ut, both densities by c_tilde.
     phi_pred_V = phi_pred_hat.astype(np.float64) * Ut
     n_pred = n_pred_hat.astype(np.float64) * c_tilde
     p_pred = p_pred_hat.astype(np.float64) * c_tilde
 
     rel_phi = relative_L1(phi_pred_V, phi_true_V)
-    # Densities scored in log space, the variable the networks actually learn.
+    # Densities scored in log space, the variable the networks actually learn,
+    # and again linearly, which the large values dominate.
     rel_n_log = relative_L1(np.log10(n_pred[interior]), np.log10(n_true[interior]))
     rel_p_log = relative_L1(np.log10(p_pred[interior]), np.log10(p_true[interior]))
     rel_n_lin = relative_L1(n_pred[interior], n_true[interior])
@@ -69,9 +83,11 @@ def evaluate(problem, *, x_hat, phi_true_V, n_true, p_true, bias=None,
     print("  (densities scored on interior nodes only; contact pins excluded)")
 
     return {
+        # Profiles, prediction and reference side by side, for plot().
         "phi_pred": phi_pred_V, "phi_true": phi_true_V,
         "n_pred": n_pred, "n_true": n_true,
         "p_pred": p_pred, "p_true": p_true,
+        # Headline errors, also used in the figure titles.
         "rel_phi": rel_phi, "rel_n_log": rel_n_log, "rel_p_log": rel_p_log,
     }
 
@@ -80,11 +96,18 @@ def report_currents(problem, *, x_hat, x_cm=None, ref_potential_V=None,
                     ref_electrons=None, ref_holes=None, interior=slice(1, -1)):
     """Report the predicted terminal current and how constant it is.
 
-    Jn + Jp should be independent of x, so its spread across the device is a
-    self-consistency check independent of any reference comparison. If x_cm
-    and the reference profiles are supplied, the reference current is
-    finite-differenced for comparison.
+    x_hat : scaled evaluation coordinates.
+    x_cm, ref_potential_V, ref_electrons, ref_holes : optional reference
+        profiles; given all four, the reference current is finite-differenced
+        for comparison.
+    interior : slice excluding contact nodes.
+
+    Jn + Jp must be independent of x, so its spread across the device is a
+    self-consistency check needing no reference. Returns (Jn, Jp, Jtot) in
+    A/cm^2.
     """
+    # requires_grad_(True), and no no_grad() block: unlike evaluate() above,
+    # the currents contain derivatives, so the graph is needed here.
     x_t = torch.as_tensor(
         x_hat.reshape(-1, 1), dtype=problem.dtype, device=problem.device
     ).requires_grad_(True)
@@ -94,7 +117,8 @@ def report_currents(problem, *, x_hat, x_cm=None, ref_potential_V=None,
 
     j_scale = problem.scaling["j_scale"]
     # detach() before .numpy(): fields() built a graph via create_graph=True,
-    # and these values are only being reported.
+    # and numpy() refuses a tensor that still carries one. These values are
+    # only being reported, so dropping the graph loses nothing.
     Jn_np = Jn.detach().cpu().numpy().flatten() * j_scale
     Jp_np = Jp.detach().cpu().numpy().flatten() * j_scale
     Jtot = Jn_np + Jp_np
@@ -107,6 +131,7 @@ def report_currents(problem, *, x_hat, x_cm=None, ref_potential_V=None,
 
     if x_cm is not None and ref_potential_V is not None \
             and ref_electrons is not None and ref_holes is not None:
+        # Same drift-diffusion expressions, unscaled, on the stored profiles.
         mu_n = problem.scaling["mu_n"]
         mu_p = problem.scaling["mu_p"]
         Ut = problem.scaling["Ut"]
@@ -122,12 +147,14 @@ def report_currents(problem, *, x_hat, x_cm=None, ref_potential_V=None,
 def report_thermionic(problem):
     """Report the injection balance at each thermionic contact.
 
-    Prints, per contact and per carrier, the bulk drift-diffusion current
-    arriving at the contact, the current the electrode injects, and their
-    mismatch -- the flux balance the training residual imposes, read back in
-    physical units, so it is a self-consistency check independent of any
-    reference. Also prints the reduced field f and n_inj, the density the
-    contact drives towards.
+    Prints, per contact and per carrier, the bulk current arriving at the
+    contact, the current the electrode injects and their mismatch -- the flux
+    balance the training residual imposes, read back in physical units, so it
+    is a self-consistency check needing no reference. Also prints the reduced
+    field f and n_inj, the density the contact drives towards.
+
+    Returns a dict of contact name -> those quantities; empty for a purely
+    Ohmic device.
     """
     contacts = [(name, c) for name, c in
                 (("left", problem.thermionic_left),
@@ -157,14 +184,19 @@ def report_thermionic(problem):
         p_inj = injection_density(f, dos_hat=s["nv_hat"],
                                   barrier_eV=contact.phi_p, Ut=Ut)
 
-        # detach(): contact_fields builds a graph, and these are read values.
+        # Each of these is a 1-element tensor still attached to a graph:
+        # detach() drops the graph, cpu() moves it to host memory, and
+        # reshape(-1)[0] takes the single value out as a float.
         val = lambda t: float(t.detach().cpu().reshape(-1)[0])  # noqa: E731
         rec = {
             "f": val(f),
+            # Currents in A/cm^2. The injection terms carry the contact's sign
+            # so they are directly comparable with the bulk ones.
             "Jn_bulk": val(Jn) * j_scale,
             "Jp_bulk": val(Jp) * j_scale,
             "Jn_inj": contact.n_sign * val(Jn_inj) * j_scale,
             "Jp_inj": contact.p_sign * val(Jp_inj) * j_scale,
+            # Densities at the contact, and the values it drives them towards.
             "n_contact": val(n_hat) * c_tilde,
             "p_contact": val(p_hat) * c_tilde,
             "n_inj": val(n_inj) * c_tilde,
@@ -176,6 +208,8 @@ def report_thermionic(problem):
               "f = {4:.4e}".format(name, contact.x, contact.phi_n,
                                    contact.phi_p, rec["f"]))
         for carrier in ("n", "p"):
+            # Mismatch relative to the larger of the two, so it stays finite
+            # when either side is near zero.
             bulk = rec["J{0}_bulk".format(carrier)]
             inj = rec["J{0}_inj".format(carrier)]
             denom = max(abs(bulk), abs(inj))
@@ -195,9 +229,13 @@ def report_thermionic(problem):
 # ============================================================
 
 def plot(res, history_epochs, history_losses, x_nm, bias, filename):
-    """Plot potential, both carrier densities, and the training loss.
+    """Four-panel summary figure: potential, its error, densities, loss curve.
 
-    ``res`` is the dict returned by ``evaluate``.
+    res : the dict returned by ``evaluate``.
+    history_epochs, history_losses : the loss curve from ``train``.
+    x_nm : evaluation coordinates in nm, for the x-axis.
+    bias : applied bias in volts, for the titles.
+    filename : path to write the PNG to.
     """
     import matplotlib.pyplot as plt
 
@@ -216,7 +254,7 @@ def plot(res, history_epochs, history_losses, x_nm, bias, filename):
     ax.legend()
     ax.grid(alpha=0.3)
 
-    # (b) Pointwise difference in phi.
+    # (b) Pointwise difference in phi, which (a) is too coarse to show.
     ax = axes[0, 1]
     ax.plot(x_nm, res["phi_pred"] - res["phi_true"], color="tab:purple", lw=1.3)
     ax.set_xlabel(r"$x$ [nm]")
@@ -224,9 +262,9 @@ def plot(res, history_epochs, history_losses, x_nm, bias, filename):
     ax.set_title("(b) Pointwise difference")
     ax.grid(alpha=0.3)
 
-    # (c) Carrier densities, log axis. The reference curves exclude the
-    # contact nodes: the minority pins there are discontinuities the networks
-    # are not asked to fit.
+    # (c) Carrier densities, log axis. The reference curves drop the contact
+    # nodes, where the minority pins are discontinuities the networks are not
+    # asked to fit; the predictions are drawn across the full domain.
     ax = axes[1, 0]
     ax.semilogy(x_nm[1:-1], res["n_true"][1:-1], "-", lw=3, alpha=0.45,
                 color="tab:blue", label="n (reference)")
@@ -258,54 +296,70 @@ def plot(res, history_epochs, history_losses, x_nm, bias, filename):
     return fig
 
 
-def plot_weights(weighting, filename, bias=None):
-    """Plot an adaptive rule's weights, targets and gradient spreads.
+def plot_weights(weighting, filename, bias=None, clip_decades=6.0):
+    """Plot each loss term's relative loss and relative weight, one panel each.
 
-    Three stacked panels sharing the epoch axis, all log-y because the
-    quantities span many decades:
+    weighting : a LossWeights that recorded history (needs history_loss);
+        returns None if it did not.
+    filename : path to write the PNG to.
+    bias : applied bias in volts, used in the title. Omitted if None.
+    clip_decades : half-height of the y-axis, in decades either side of 1.0.
+        Values outside are drawn but do not rescale the view; None autoscales.
 
-      (a) the live weight lambda_i actually multiplying each loss term;
-      (b) the instantaneous target lambda_hat_i = std_max/std_i, before the
-          running average -- the gap between (b) and (a) is how hard a weight
-          is still being pulled;
-      (c) the gradient standard deviation std_i behind the target.
-
-    Terms skipped by the update record NaN, so they simply do not draw and a
-    gap in a trace is visibly a gap rather than a stale value.
+    Both curves are divided by their own first recorded value, so they start
+    at 1.0 and share a dimensionless axis: each panel then shows which way a
+    term's weight moved as its loss fell or stalled.
     """
     import matplotlib.pyplot as plt
 
     epochs = weighting.history_epochs
-    # Only plot terms that actually adapted; a term that never produced a
-    # gradient std is all-NaN and would add an empty line and a misleading
-    # legend entry.
+    hist_loss = getattr(weighting, "history_loss", None)
+    if hist_loss is None:                      # rule records no losses
+        return None
+
+    # Skip terms that never recorded a value (all-NaN); they would draw an
+    # empty panel. `v == v` is False only for NaN.
     active = [t for t in weighting.terms
-              if any(v == v for v in weighting.history_std[t])]
+              if any(v == v for v in hist_loss[t])]
+    if not active:
+        return None
 
-    fig, axes = plt.subplots(3, 1, figsize=(10, 11), sharex=True)
-    panels = [
-        (weighting.history, r"$\lambda_i$", "(a) Adaptive loss weights"),
-        (weighting.history_target, r"$\hat{\lambda}_i$",
-         r"(b) Instantaneous target $\hat{\lambda}_i = "
-         r"\mathrm{std}_{\max}/\mathrm{std}_i$ (before smoothing)"),
-        (weighting.history_std, r"$\mathrm{std}(\nabla_\theta \mathcal{L}_i)$",
-         r"(c) Gradient standard deviation"),
-    ]
+    def _relative(series):
+        """Series divided by its first finite non-zero entry.
 
-    for ax, (data, ylabel, title) in zip(axes, panels):
-        for t in active:
-            ax.semilogy(epochs, data[t], lw=1.4, label=t)
-        ax.set_ylabel(ylabel)
-        ax.set_title(title)
+        series : list of floats, possibly starting with NaN or 0.0 for a term
+            inactive early on. Returns all-NaN if there is no usable base.
+        """
+        base = next((v for v in series if v == v and v != 0.0), None)
+        if base is None:
+            return [float("nan")] * len(series)
+        return [v / base for v in series]
+
+    n = len(active)
+    fig, axes = plt.subplots(n, 1, figsize=(10, 2.8 * n + 1.2), sharex=True)
+    if n == 1:
+        axes = [axes]                          # keep the zip below uniform
+
+    for ax, t in zip(axes, active):
+        ax.semilogy(epochs, _relative(hist_loss[t]), lw=1.4, color="tab:blue",
+                    label=r"relative loss $\mathcal{L}_i/\mathcal{L}_i(0)$")
+        ax.semilogy(epochs, _relative(weighting.history[t]), lw=1.4,
+                    color="tab:red",
+                    label=r"relative weight $\lambda_i/\lambda_i(0)$")
+        ax.axhline(1.0, color="0.5", lw=0.8, ls=":")   # the common starting point
+        if clip_decades is not None:
+            ax.set_ylim(10.0 ** -clip_decades, 10.0 ** clip_decades)
+        ax.set_ylabel(t, fontsize=11)
         ax.grid(alpha=0.3, which="both")
 
-    axes[0].legend(fontsize=8, ncol=len(active))
+    axes[0].legend(fontsize=9, ncol=2, loc="upper right")
     axes[-1].set_xlabel("epoch")
 
+    name = getattr(weighting, "scheme_name", "Adaptive")
     if bias is not None:
-        fig.suptitle("Inverse-Dirichlet weight evolution at "
-                     "{0:.1f} V".format(bias))
-        fig.tight_layout(rect=(0, 0, 1, 0.97))
+        fig.suptitle("{0}: loss and weight per term at {1:.1f} V".format(
+            name, bias))
+        fig.tight_layout(rect=(0, 0, 1, 0.98))
     else:
         fig.tight_layout()
 

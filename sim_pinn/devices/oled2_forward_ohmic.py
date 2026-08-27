@@ -62,6 +62,8 @@ def build(poisson_weight, seed=0):
     Networks are re-initialised per run from the same seed so the only
     difference between sweep points is the weight.
     """
+    # Re-seed per build so a sweep varies only in the weights: torch's RNG
+    # drives the Xavier init and the collocation draw.
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -98,6 +100,7 @@ def build(poisson_weight, seed=0):
 
 
 def run(poisson_weight):
+    """Train and score one Poisson weight; returns evaluate()'s dict."""
     print()
     print("#" * 70)
     print("# Ohmic anode, Poisson weight = {0:g}".format(poisson_weight))
@@ -143,6 +146,7 @@ def run(poisson_weight):
 
 
 def main():
+    """Sweep the Poisson weight over the command-line arguments."""
     weights = [float(w) for w in sys.argv[1:]] or [10.0, 100.0]
     summary = []
     for w in weights:

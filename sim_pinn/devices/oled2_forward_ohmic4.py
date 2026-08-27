@@ -57,17 +57,25 @@ NORMALIZE = os.environ.get("POISSON_NORMALIZE", "1") == "1"
 # unrepresentable.
 HARD_PHI_BC = os.environ.get("HARD_PHI_BC", "1") == "1"
 
-# Electron-continuity weight. Poisson cannot determine phi on its own once the
-# densities are free: for any smooth phi there is an n = lam^2*phi'' + p that
-# satisfies it exactly, and because lam^2 = 5.0e-07 is tiny, absorbing even a
-# 0.28 V error in phi costs n well under 1% of its local value. Continuity is
-# the equation that breaks that degeneracy -- it fixes n given phi through
-# drift-diffusion -- so its weight is the direct lever on phi accuracy, more so
-# than any Poisson weight. Left at the default 1.0 unless overridden.
+# Electron-continuity weight. Poisson alone cannot determine phi once the
+# densities are free: for any smooth phi there is an n = lam^2*phi'' + p
+# satisfying it exactly, and with lam^2 = 5.0e-07 absorbing even a sizeable
+# phi error costs n well under 1% of its local value. Continuity breaks that
+# degeneracy -- it fixes n given phi through drift-diffusion -- so its weight
+# is a more direct lever on phi accuracy than any Poisson weight. Default 1.0
+# unless overridden.
 W_CONT_N = float(os.environ.get("W_CONT_N", "0")) or None
 
 
 def build(poisson_weight, seed=0, w_cont_n=None):
+    """Build the three-pin problem at the given weights.
+
+    poisson_weight, w_cont_n : overrides on base.LOSS_WEIGHTS; w_cont_n=None
+        keeps that term's default.
+    seed : re-seeded per build so a sweep varies only in the weights.
+    """
+    # Re-seed per build so a sweep varies only in the weights: torch's RNG
+    # drives the Xavier init and the collocation draw.
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -97,7 +105,7 @@ def build(poisson_weight, seed=0, w_cont_n=None):
         majority_only_bc=False,
         thermionic_left=None,
         u_p_bc_left=-np.log(p_bc_left),     # anode holes
-        u_n_bc_left=-np.log(n_bc_left),     # anode electrons  <-- new
+        u_n_bc_left=-np.log(n_bc_left),     # anode electrons (majority)
         u_n_bc_right=-np.log(n_bc_right),   # cathode electrons
         u_p_bc_right=None,                  # cathode holes: discontinuous
         loss_weights=weights,
@@ -108,6 +116,7 @@ def build(poisson_weight, seed=0, w_cont_n=None):
 
 
 def run(poisson_weight, w_cont_n=None):
+    """Train and score one weight combination; returns evaluate()'s dict."""
     print()
     print("#" * 70)
     print("# Ohmic anode, n(0) AND p(0) pinned; w_poisson = {0:g}, "
@@ -163,11 +172,14 @@ def run(poisson_weight, w_cont_n=None):
 
 
 def main():
-    # Two sweep modes:
-    #   python -m sim_pinn.devices.oled2_forward_ohmic4 10 100   -> sweep w_poisson
-    #   CONT_N_SWEEP="5 10 50 100" python ...        -> sweep w_cont_n, with
-    #                                                   w_poisson fixed (W_POISSON,
-    #                                                   default 1: the best found)
+    """Sweep one weight and tabulate the resulting errors.
+
+    Two modes, selected by whether CONT_N_SWEEP is set:
+      python -m sim_pinn.devices.oled2_forward_ohmic4 10 100
+          sweeps w_poisson over the positional arguments;
+      CONT_N_SWEEP="5 10 50 100" python -m ...
+          sweeps w_cont_n instead, holding w_poisson at $W_POISSON.
+    """
     sweep = os.environ.get("CONT_N_SWEEP", "").split()
     if sweep:
         w_poisson = float(os.environ.get("W_POISSON", "1"))

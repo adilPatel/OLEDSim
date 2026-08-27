@@ -52,6 +52,8 @@ from sim_pinn import core
 # rather than inheriting the RNG state left by the previous one.
 SEED = 0
 
+# set_default_dtype fixes the precision of every tensor created afterwards.
+# float32 here because the MPS accelerator has no float64.
 torch.set_default_dtype(torch.float32)
 
 # ============================================================
@@ -69,8 +71,14 @@ else:
             "Set torch.set_default_dtype(torch.float32) as well, and re-check "
             "the Langevin residual for underflow before trusting the result."
         )
+    # torch.accelerator is the backend-agnostic handle on whatever hardware
+    # is present (MPS on Apple silicon, CUDA on an NVIDIA box); falling back
+    # to the CPU when there is none. torch.device is just the tag that tells
+    # every tensor and module where to live.
     _accelerator = torch.accelerator.current_accelerator() if torch.accelerator.is_available() else None
     device = torch.device(_accelerator.type) if _accelerator is not None else torch.device("cpu")
+# The default dtype set above; every tensor built later is matched to it,
+# since torch refuses to combine tensors of differing dtype.
 dtype = torch.get_default_dtype()
 print("Using device:", device)
 
@@ -85,7 +93,7 @@ IV_NPZ = os.path.join(_TEST_DIR, "oled1_devsim_iv.npz")
 
 # Applied biases to train at. Each needs a matching reference file from
 # devsim_reference_oled1.py (whose TARGET_BIASES must agree with this list).
-BIASES = (3.3, 3.4, 3.5, 3.6, 3.7)
+BIASES = (2.5,)
 
 
 def reference_npz(bias):
@@ -93,14 +101,19 @@ def reference_npz(bias):
     return os.path.join(_TEST_DIR, "oled1_devsim_reference_{0:.1f}V.npz".format(bias))
 
 
-# Figure filenames carry a tag for the configuration that produced them, so a
-# run cannot overwrite another configuration's figures: "demo" for the plain
-# run, "hdbc" once the hard boundary ansatz is on, "id" once inverse-Dirichlet
-# weighting is on top of it.
 def plot_tag():
-    """Short tag naming the configuration under test."""
+    """Short tag naming the configuration under test.
+
+    Figures carry the tag so one configuration cannot overwrite another's
+    output: the adaptive rule's own name when weights adapt, "hdbc" for fixed
+    weights under the hard boundary ansatz, "demo" for the plain run.
+    """
     if USE_ADAPTIVE_WEIGHTS:
-        return "id"
+        tag = {"inverse_dirichlet": "id", "softadapt": "sa"}.get(
+            ADAPTIVE_KIND, ADAPTIVE_KIND)
+        if PIN_N_ANODE_FROM_REFERENCE:
+            tag += "_npin"                     # diagnostic gets its own name
+        return tag
     if USE_HARD_DENSITY_BC or USE_HARD_PHI_BC:
         return "hdbc"
     return "demo"
@@ -189,28 +202,58 @@ BETA_CONCENTRATION = 1.0
 
 # ---- Adaptive loss weighting -------------------------------------------
 #
-# Inverse-Dirichlet weighting (Maddu, Sturm, Muller & Sbalzarini 2022); see
-# core.InverseDirichletWeights for the rule and Models_neural.md for the
-# derivation.
-#
-# Motivation, specific to this device: a fixed weight is calibrated to one
-# operating point. The `bc` term grows with the applied bias -- the boundary
-# residual is squared and the contact value scales with the bias -- so a
-# weight balancing it at the bottom of the sweep no longer does at the top.
-# Setting the weights from the gradient balance instead tracks that.
-#
-# Why this scheme and not a gradient-magnitude ratio: every term in this loss
-# except Poisson admits a trivial minimiser (a Dirichlet pin met exactly, a
-# variance zeroed by any constant current, a flat density profile). A rule
-# whose denominator is a mean gradient magnitude rewards a term for reaching
-# such a zero and starves Poisson. Using the gradient *standard deviation*
-# instead distinguishes a converged term (gradients small and uniform) from a
-# stiff one (small on average, very uneven), so a weight grows only in
-# proportion to the spread deficit it is derived from.
-#
-# This balances trainability, not accuracy, so it is scored against DEVSIM
-# rather than assumed to be an improvement.
+# Why adapt at all: a fixed weight is calibrated to one operating point. The
+# `bc` term grows with the applied bias -- the residual is squared and the
+# contact value scales with the bias -- so a weight balancing it at the bottom
+# of the sweep no longer does at the top. Deriving the weights from the loss
+# itself tracks that. This balances trainability, not accuracy, so it is
+# scored against DEVSIM rather than assumed to be an improvement.
 USE_ADAPTIVE_WEIGHTS = True
+
+# Which adaptive rule: "inverse_dirichlet" or "softadapt".
+#
+# inverse_dirichlet is retained for reproducibility but is NOT recommended on
+# this loss: lambda_i = max_j(s_j)/s_i pins the largest-spread term at
+# lambda = 1 with no way to raise it, so when that term is Poisson -- the
+# accuracy bottleneck here -- it is starved and stays starved. Which term wins
+# that argmax can turn on numerical noise near a tie.
+#
+# softadapt scores each term by its recent *relative* rate of change and takes
+# a softmax, so the weights are bounded (sum to 1), no term is singled out by
+# an argmax, and a term that has stopped improving because it is finished is
+# not amplified.
+ADAPTIVE_KIND = "softadapt"
+
+# Softmax temperature. beta > 0 puts more weight on the slowly-improving terms,
+# which is the direction the hand-set LOSS_WEIGHTS above were chosen to bias
+# towards. With relative rates s_i is O(1), so beta ~ 1 is the scale-free
+# starting point; beta -> 0 gives uniform weights.
+SA_BETA = 1.0
+
+# Recompute every N epochs. s_i is then a difference over N epochs, which
+# averages out collocation-resampling noise, but couples beta to this value.
+SA_UPDATE_EVERY = 10
+
+# Use each term's relative rate s_i / |L_i(t-1)| rather than the raw
+# difference. Effectively required here: the losses span ~12 decades, and an
+# absolute rate ranks a term at 1e-13 as "barely changing" however fast it is
+# actually converging (see core.SoftAdaptWeights).
+SA_NORMALIZE = True
+
+# Scale each softmax term by its share of the total loss (the paper's
+# "Loss-Weighted SoftAdapt"). Effectively required: the relative rate is
+# unbounded above, so without this the rule is captured by whichever term is
+# smallest and noisiest. The loss share also does automatically what the
+# hand-set LOSS_WEIGHTS do by hand -- bias the optimiser towards the terms
+# still carrying real residual.
+SA_LOSS_WEIGHTED = True
+
+# Starting weights, deliberately uniform: the softmax overwrites them from the
+# second update onward, so these only set the very first epochs.
+SA_INITIAL_WEIGHTS = {
+    "bc": 1.0, "cont_n": 1.0, "cont_p": 1.0, "jtot": 1.0,
+    "poisson": 1.0, "thermionic": 1.0,
+}
 
 # Hard boundary ansatz for phi (see core.PhiNet): the contact values are built
 # into the architecture, so phi satisfies them identically and the `bc` term
@@ -231,6 +274,24 @@ USE_HARD_PHI_BC = True
 # straight-line phi satisfies Poisson as well. Pinning n(L) and p(0)
 # architecturally removes that solution from the hypothesis space.
 USE_HARD_DENSITY_BC = True
+
+# Close n-Net's free anode end with a reference-derived value, making the n
+# ansatz two-ended. The literal contact value cannot be used -- n(0) sits ~25
+# decades below the adjacent node, the discontinuity MAJORITY_ONLY_BC exists
+# to avoid -- so PIN_N_ANODE_AT_NM reads the reference just inside the
+# boundary layer, where the profile is smooth.
+#
+# OFF: the two-ended ansatz interpolates u linearly between the pins, and the
+# bubble x(1-x)N(x) must then supply every deviation while vanishing at BOTH
+# ends. Pinning a point inside the boundary layer fixes the profile exactly
+# where it varies fastest, so the network can no longer place the layer; the
+# one-sided u_R + (1-x)N(x) leaves the anode free with only (1-x) damping.
+# Kept as a diagnostic only -- it reads the reference solution, so it could
+# not generalise to a device without one.
+PIN_N_ANODE_FROM_REFERENCE = False
+
+# Where to read that value, in nm from the anode.
+PIN_N_ANODE_AT_NM = 1.0
 
 # Running-average rate for the weight update. Higher than a magnitude-ratio
 # scheme would use (0.5 against 0.1): the gradient std is a much less noisy
@@ -311,8 +372,8 @@ print("Langevin prefactor     = {0:.4e}".format(SCALING["langevin_prefactor"]))
 def load_reference(bias):
     """Load the DEVSIM reference profile at one bias and derive its BCs.
 
-    Returns a dict holding the reference arrays in both physical and scaled
-    units, together with the Dirichlet contact values the PINN is given.
+    Returns a dict of the reference arrays in both physical and scaled units,
+    the terminal current, and the Dirichlet contact values the PINN is given.
     """
     path = reference_npz(bias)
     if not os.path.exists(path):
@@ -341,13 +402,16 @@ def load_reference(bias):
     p_hat = holes / C_TILDE
 
     return {
+        # Run metadata.
         "bias": ref_bias, "vbi": vbi, "current_A": ref_current,
+        # Profiles in physical units, for scoring and plotting.
         "x_nm": x_nm, "potential": potential,
         "electrons": electrons, "holes": holes,
+        # The same, scaled -- the units the networks work in.
         "x_hat": x_hat, "phi_hat": phi_hat, "n_hat": n_hat, "p_hat": p_hat,
-        # Dirichlet contact values, taken from the reference solution at the
-        # two contact nodes (applied bias at the anode, 0 at the cathode;
-        # Ohmic density pins from the Contact spec).
+        # Dirichlet contact values, read off the two contact nodes: applied
+        # bias at the anode, 0 at the cathode, Ohmic density pins from the
+        # Contact spec.
         "phi_bc_left": float(phi_hat[0]),     # x = 0   (top / anode)
         "phi_bc_right": float(phi_hat[-1]),   # x = L   (bot / cathode)
         "n_bc_left": float(n_hat[0]),
@@ -397,25 +461,17 @@ def describe_reference(ref):
 
 def build(ref):
     """Construct phi-Net / n-Net / p-Net and the PINN problem for one bias."""
-    # Log-space initialisation offsets: one scalar per carrier, shifting the
-    # net's starting output to the right order of magnitude. Without them
-    # Xavier init gives u ~ 0, i.e. density_hat = exp(0) = 1 = C_tilde for
-    # both carriers -- ~5 decades high for holes. Since the residuals depend
-    # on u exponentially (n_hat*p_hat = exp(-u_n - u_p) in the Langevin term),
-    # that start inflates recombination by ~1e5 and the early gradients chase
-    # it instead of the physics. See LogDensityNet.__init__.
+    # Log-space initialisation offsets, one scalar per carrier, shifting each
+    # net's starting output to the right order of magnitude (see
+    # LogDensityNet). The interior mean [1:-1] drops the contact nodes, whose
+    # minority pins are discontinuities that would drag the mean tens of units
+    # off the interior scale.
     #
-    # The interior mean [1:-1] excludes the contact nodes: the minority pins
-    # there are genuine discontinuities (p_hat = 7.3e-47 at the cathode) and
-    # would drag the mean tens of units away from the interior scale.
-    #
-    # Caveat: this reads the DEVSIM reference. Defensible for a forward-problem
-    # demo scored against that reference -- it is an initialisation heuristic,
-    # not a training target, and carries only the mean order of magnitude, no
-    # shape -- but unavailable on a device with no reference solution. The
-    # generalisable substitute needs no solution: the contact densities are
-    # known device parameters, so -log of their geometric mean gives the same
-    # scalar.
+    # Caveat: this reads the reference. Defensible for a forward-problem demo
+    # scored against it -- an initialisation heuristic carrying only the mean
+    # order of magnitude, no shape -- but unavailable without a reference. The
+    # generalisable substitute needs none: the contact densities are known
+    # device parameters, so -log of their geometric mean gives the same scalar.
     u_n_init = float(np.mean(-np.log(ref["n_hat"][1:-1])))
     u_p_init = float(np.mean(-np.log(ref["p_hat"][1:-1])))
     print()
@@ -435,6 +491,15 @@ def build(ref):
         if not MAJORITY_ONLY_BC:
             u_n_bc = (-np.log(ref["n_bc_left"]), u_n_bc[1])
             u_p_bc = (u_p_bc[0], -np.log(ref["p_bc_right"]))
+        elif PIN_N_ANODE_FROM_REFERENCE:
+            # Close n's free (anode) end with a value read from the reference
+            # profile rather than the literal contact pin. Selecting by x_nm
+            # keeps the choice independent of the mesh's node spacing.
+            i = int(np.argmin(np.abs(ref["x_nm"] - PIN_N_ANODE_AT_NM)))
+            n_anode_hat = ref["electrons"][i] / C_TILDE
+            print("  n(anode) pinned to reference at x = {0:.2f} nm: "
+                  "{1:.4e} cm^-3".format(ref["x_nm"][i], ref["electrons"][i]))
+            u_n_bc = (-np.log(n_anode_hat), u_n_bc[1])
 
     phi_net, n_net, p_net = core.build_networks(
         width=WIDTH, depth=DEPTH, u_n_offset=u_n_init, u_p_offset=u_p_init,
@@ -465,13 +530,21 @@ def build(ref):
 # ============================================================
 
 def make_weights():
-    """Build the loss-weight rule for a run.
+    """Build the loss-weight rule for a run, per USE_ADAPTIVE_WEIGHTS and
+    ADAPTIVE_KIND.
 
-    Either rule presents the same interface to core.train (a live weights dict
-    plus an update hook), so switching between them needs no other change.
+    Every rule presents core.train the same interface -- a live weights dict
+    plus an update hook -- so switching between them needs no other change.
     """
     if not USE_ADAPTIVE_WEIGHTS:
         return core.make_weights("fixed", initial_weights=LOSS_WEIGHTS)
+    if ADAPTIVE_KIND == "softadapt":
+        return core.make_weights(
+            "softadapt", initial_weights=SA_INITIAL_WEIGHTS,
+            beta=SA_BETA, update_every=SA_UPDATE_EVERY,
+            terms=ID_TERMS, normalize=SA_NORMALIZE,
+            loss_weighted=SA_LOSS_WEIGHTED,
+        )
     return core.make_weights(
         "inverse_dirichlet", initial_weights=ID_INITIAL_WEIGHTS,
         reference=ID_REFERENCE, alpha=ID_ALPHA, update_every=ID_UPDATE_EVERY,
@@ -480,6 +553,7 @@ def make_weights():
 
 
 def train(problem, weighting):
+    """Train one problem under this script's schedule."""
     return core.train(
         problem, epochs=EPOCHS, n_int=N_INT, lr=LEARNING_RATE,
         milestones=MILESTONES, gamma=GAMMA, log_every=LOG_EVERY,
@@ -489,6 +563,7 @@ def train(problem, weighting):
 
 
 def evaluate(problem, ref):
+    """Score the trained networks against one bias's reference profile."""
     return core.evaluate(
         problem, x_hat=ref["x_hat"], phi_true_V=ref["potential"],
         n_true=ref["electrons"], p_true=ref["holes"], bias=ref["bias"],
@@ -496,6 +571,7 @@ def evaluate(problem, ref):
 
 
 def report_currents(problem, ref):
+    """Report the terminal current, against the finite-differenced reference."""
     return core.report_currents(
         problem, x_hat=ref["x_hat"], x_cm=ref["x_nm"] * 1e-7,
         ref_potential_V=ref["potential"], ref_electrons=ref["electrons"],
@@ -504,6 +580,7 @@ def report_currents(problem, ref):
 
 
 def plot(res, history_epochs, history_losses, ref, filename=None):
+    """Write the four-panel figure, to plot_png(bias) unless told otherwise."""
     if filename is None:
         filename = plot_png(ref["bias"])
     return core.plot(res, history_epochs, history_losses,
@@ -517,8 +594,10 @@ def run_bias(bias, interior=slice(1, -1)):
     print("# Applied bias {0:.2f} V".format(bias))
     print("#" * 70)
 
-    # Reset the RNG per bias so the three runs differ only in the bias, not in
-    # the initialisation or the collocation draw.
+    # Reset the RNG per bias, so runs differ only in the bias and not in the
+    # initialisation or the collocation draw.
+    # manual_seed fixes torch's RNG, which drives both the Xavier weight init
+    # and the collocation draw; numpy's seed covers the reference handling.
     torch.manual_seed(SEED)
     np.random.seed(SEED)
 
@@ -543,15 +622,19 @@ def run_bias(bias, interior=slice(1, -1)):
     print()
     print("Final loss weights: {0}".format(weighting.format_weights()))
 
+    # Terminal current: its interior mean, and the spread that says how
+    # x-independent it actually came out.
     j_pinn = float(np.mean(Jtot[interior]))
     j_spread = float(np.ptp(Jtot[interior]))
     return {
         "weighting": weighting,
         "bias": ref["bias"],
+        # Profile errors, for report_accuracy_summary.
         "rel_phi": res["rel_phi"],
         "rel_n_log": res["rel_n_log"],
         "rel_p_log": res["rel_p_log"],
         "max_abs_phi": float(np.max(np.abs(res["phi_pred"] - res["phi_true"]))),
+        # Currents, for report_current_comparison.
         "j_pinn": j_pinn,
         "j_spread": j_spread,
         "j_devsim": ref["current_A"],
@@ -592,6 +675,7 @@ def report_accuracy_summary(summaries):
 
 
 def main(biases=BIASES):
+    """Train at every bias in turn, then tabulate accuracy and current."""
     summaries = [run_bias(bias) for bias in biases]
     report_accuracy_summary(summaries)
     report_current_comparison(summaries)

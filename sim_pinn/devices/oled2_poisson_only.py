@@ -89,9 +89,9 @@ NORMALIZE = os.environ.get("POISSON_NORMALIZE", "1") == "1"
 # would in a device with a compensated region).
 RESIDUAL_FLOOR = 1.0e-12
 
-# With a normalised residual both terms are O(1), so the boundary term no
-# longer needs the large relative weight it carried when the interior residual
-# was ~1e-6.
+# With a normalised residual both terms are O(1), so the boundary term needs
+# no relative weight; under the absolute residual the interior term is many
+# decades smaller and the pins have to be weighted up to compete.
 BC_WEIGHT = base.LOSS_WEIGHTS["bc"] if not NORMALIZE else 1.0
 
 PNG = os.path.join(
@@ -111,26 +111,38 @@ def reference_charge_interpolator():
     log_n = np.log(base.REF_N_HAT.astype(np.float64))
     log_p = np.log(base.REF_P_HAT.astype(np.float64))
 
+    # Reference arrays copied onto the accelerator once, so the per-epoch
+    # interpolation below never touches host memory.
     x_t = torch.as_tensor(x_ref, dtype=base.dtype, device=base.device)
     ln_t = torch.as_tensor(log_n, dtype=base.dtype, device=base.device)
     lp_t = torch.as_tensor(log_p, dtype=base.dtype, device=base.device)
 
     def interp(x_query):
         xq = x_query.reshape(-1)
-        # searchsorted -> bracketing indices, then linear blend in log space.
+        # searchsorted finds, for each query point, the index where it would
+        # slot into the sorted reference grid -- the right-hand bracket.
+        # .contiguous() lays the query out in memory as searchsorted requires;
+        # .clamp keeps the index in range so idx-1 and idx are always valid.
         idx = torch.searchsorted(x_t, xq.contiguous()).clamp(1, len(x_t) - 1)
         x0, x1 = x_t[idx - 1], x_t[idx]
         w = ((xq - x0) / (x1 - x0)).clamp(0.0, 1.0)
         ln = ln_t[idx - 1] * (1 - w) + ln_t[idx] * w
         lp = lp_t[idx - 1] * (1 - w) + lp_t[idx] * w
+        # Back out of log space, reshaped to the (N, 1) column the residual
+        # expects.
         return torch.exp(ln).reshape(-1, 1), torch.exp(lp).reshape(-1, 1)
 
     return interp
 
 
 def main():
+    """Train phi-Net alone against the reference charge, then score and plot.
+
+    Takes an optional epoch count as the first command-line argument.
+    """
     epochs = int(sys.argv[1]) if len(sys.argv) > 1 else EPOCHS
 
+    # Fix both RNGs so the weight init and collocation draw are reproducible.
     torch.manual_seed(0)
     np.random.seed(0)
 
@@ -153,12 +165,16 @@ def main():
     phi_net = core.PhiNet(width=base.WIDTH, depth=base.DEPTH).to(base.device)
     interp = reference_charge_interpolator()
 
+    # The two contact points and their target values, built once on-device.
     x_bc = torch.tensor([[base.X_LEFT], [base.X_RIGHT]],
                         device=base.device, dtype=base.dtype)
     phi_bc = torch.tensor([[base.phi_bc_left], [base.phi_bc_right]],
                           device=base.device, dtype=base.dtype)
 
+    # .parameters() yields the module's trainable tensors; Adam updates them
+    # from the .grad that backward() fills in.
     opt = torch.optim.Adam(phi_net.parameters(), lr=LR)
+    # MultiStepLR scales the learning rate by gamma at each milestone epoch.
     sched = torch.optim.lr_scheduler.MultiStepLR(
         opt, milestones=MILESTONES, gamma=GAMMA)
 
@@ -167,36 +183,55 @@ def main():
     print()
     print("Training phi-Net alone...")
     for epoch in range(epochs):
+        # backward() accumulates into .grad, so last epoch's gradients must be
+        # cleared; set_to_none frees them outright rather than zero-filling.
         opt.zero_grad(set_to_none=True)
 
+        # Uniform collocation draw, straight onto the device.
+        # requires_grad_(True) marks x for differentiation, so the two
+        # autograd.grad calls below have a recorded graph to walk.
         x = torch.rand(N_INT, 1, device=base.device,
                        dtype=base.dtype).requires_grad_(True)
+        # detach() here: the charge is fixed reference data, so the
+        # interpolation must not become a path autograd differentiates.
         n_hat, p_hat = interp(x.detach())
 
+        # phi'' by differentiating twice. grad_outputs=ones seeds the
+        # vector-Jacobian product so each collocation point gets its own
+        # derivative; create_graph=True keeps the first derivative itself
+        # differentiable, which is what makes the second call possible.
         phi = phi_net(x)
         dphi = torch.autograd.grad(phi, x, torch.ones_like(phi),
                                    create_graph=True)[0]
         d2phi = torch.autograd.grad(dphi, x, torch.ones_like(dphi),
                                     create_graph=True)[0]
 
+        # lambda^2*phi'' - (n - p), the residual this script exists to test.
         r = lam ** 2 * d2phi - (n_hat - p_hat)
         if NORMALIZE:
             # Pointwise normalisation: divide by the local magnitude of the
             # terms being balanced, so each collocation point contributes a
             # *relative* error rather than an absolute one. See the module
             # docstring for why this is the operative fix.
+            # clamp(min=) is an elementwise floor keeping the divisor off
+            # zero. No detach() needed, unlike core.poisson_residual: here the
+            # charge is reference data and carries no gradient anyway.
             scale = torch.clamp(torch.abs(n_hat - p_hat), min=RESIDUAL_FLOOR)
             r = r / scale
         L_poisson = torch.mean(r ** 2)
         L_bc = torch.mean((phi_net(x_bc) - phi_bc) ** 2)
         loss = L_poisson + BC_WEIGHT * L_bc
 
+        # backward() writes d(loss)/d(param) into each .grad and frees the
+        # graph; step() applies the update, then the LR schedule advances.
         loss.backward()
         opt.step()
         sched.step()
 
         if epoch % 20 == 0:
             hist_e.append(epoch)
+            # .item() pulls one value to the CPU, forcing the device to finish
+            # its queued work -- so it is sampled, not read every epoch.
             hist_l.append(loss.item())
         if epoch % PRINT_EVERY == 0 or epoch == epochs - 1:
             print("  epoch {0:6d} | total {1:.3e} | poisson {2:.3e} | "
@@ -207,6 +242,9 @@ def main():
     # --- evaluate against the reference potential ---
     x_eval = torch.as_tensor(base.REF_X_HAT.reshape(-1, 1),
                              dtype=base.dtype, device=base.device)
+    # no_grad(): nothing here is differentiated, so skip graph recording.
+    # cpu() moves the result to host memory and numpy() views it as an array,
+    # which is only legal off-graph and on the CPU.
     with torch.no_grad():
         phi_pred_V = phi_net(x_eval).cpu().numpy().flatten() * base.Ut
 

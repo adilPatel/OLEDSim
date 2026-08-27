@@ -1,5 +1,5 @@
 """
-poisson_pinn.py
+poisson_pinn_doped
 
 Minimal, runnable Poisson-only PINN for a 1D p-n junction.
 
@@ -28,6 +28,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+# Fix both RNGs: torch's drives the Xavier weight init and the collocation
+# draw, numpy's the sampling below.
 torch.manual_seed(0)
 np.random.seed(0)
 
@@ -63,6 +65,8 @@ JUNCTION_WIDTH = 0.02   # transition width, in scaled x units
 
 def doping_profile(x):
     """C_hat(x) = (Nd/C_tilde) for x>0 (n-side), -(Na/C_tilde) for x<0 (p-side)."""
+    # torch.tanh, not np.tanh: x is a tensor and this feeds the residual, so
+    # it must stay a tensor op for autograd to differentiate through.
     return 0.5 * (Nd / C_tilde) * (1 + torch.tanh(x / JUNCTION_WIDTH)) \
          - 0.5 * (Na / C_tilde) * (1 - torch.tanh(x / JUNCTION_WIDTH))
 
@@ -84,10 +88,13 @@ def analytic_reference(x_np):
     """Depletion-approximation analytic solution for a symmetric step junction."""
     # symmetric junction => depletion widths equal on both sides: xp = xn = xd
     C_scaled = Nd / C_tilde  # = Na / C_tilde here
-    phi_bi = phi_bc_right - phi_bc_left           # built-in potential, scaled by Ut... (dimensionless here)
-    # solve xd from: phi_bi = (C_scaled/lambda^2) * xd^2   (standard depletion result, symmetric case)
+    phi_bi = phi_bc_right - phi_bc_left           # built-in potential, scaled
+    # Depletion half-width from phi_bi = (C_scaled/lambda^2)*xd^2, the
+    # symmetric-junction case.
     xd = np.sqrt(phi_bi * lam**2 / C_scaled)
     phi = np.zeros_like(x_np)
+    # Piecewise: flat at each contact value outside the depletion region,
+    # quadratic inside it, matching at x = 0.
     for i, x in enumerate(x_np):
         if x <= -xd:
             phi[i] = phi_bc_left
@@ -104,17 +111,22 @@ def analytic_reference(x_np):
 # PHASE B -- Build the ansatz (Steps 3-4)
 # ============================================================
 
+# nn.Module: torch's base class for anything holding trainable parameters.
 class PhiNet(nn.Module):
     """phi-Net: plain FCNN, tanh activations. No log-space trick needed --
     the potential has a modest dynamic range (~phi_bi), unlike n, p."""
     def __init__(self, width=64, depth=4):
         super().__init__()
+        # nn.Linear is an affine layer Wx + b, nn.Tanh the activation between
+        # them; nn.Sequential chains them into one callable and registers
+        # every layer's parameters on this module.
         layers = [nn.Linear(1, width), nn.Tanh()]
         for _ in range(depth - 1):
             layers += [nn.Linear(width, width), nn.Tanh()]
         layers += [nn.Linear(width, 1)]
         self.net = nn.Sequential(*layers)
-        # Step 4: initialization -- Xavier/Glorot, standard and automatic
+        # Step 4: initialization -- Xavier/Glorot. The trailing underscore
+        # marks a torch in-place op: it overwrites the tensor in place.
         for m in self.net:
             if isinstance(m, nn.Linear):
                 nn.init.xavier_normal_(m.weight)
@@ -130,12 +142,14 @@ phi_net = PhiNet()
 # PHASE C -- Encode the physics as a loss (Steps 5-8)
 # ============================================================
 
-N_INT = 2048   # interior collocation points (Poisson-only: fewer needed than full DDNet)
+N_INT = 2048   # interior collocation points
 N_BC  = 2      # boundary points: just the two contacts in 1D
 
 def sample_interior(n):
     """Step 5: random collocation points in the domain (mesh-free)."""
     x = np.random.uniform(X_LEFT, X_RIGHT, size=(n, 1)).astype(np.float32)
+    # requires_grad=True marks x for differentiation, so autograd records
+    # everything computed from it and poisson_residual can take d/dx.
     return torch.tensor(x, requires_grad=True)
 
 def poisson_residual(x):
@@ -143,6 +157,11 @@ def poisson_residual(x):
     lambda^2 * phi_hat'' - (-C(x)) = 0   i.e.   lambda^2*phi'' + C(x) = 0
     (mobile carriers n,p omitted under the depletion approximation)."""
     phi = phi_net(x)
+    # autograd.grad differentiates by replaying the recorded graph -- exact,
+    # not a finite difference. grad_outputs=ones seeds the vector-Jacobian
+    # product so each collocation point gets its own derivative, and
+    # create_graph=True keeps the first derivative differentiable, which is
+    # what allows the second call. Returns a tuple, hence [0].
     dphi_dx  = torch.autograd.grad(phi, x, grad_outputs=torch.ones_like(phi),
                                     create_graph=True)[0]
     d2phi_dx2 = torch.autograd.grad(dphi_dx, x, grad_outputs=torch.ones_like(dphi_dx),
@@ -153,6 +172,7 @@ def poisson_residual(x):
 
 def boundary_loss():
     """Step 7: Dirichlet (Ohmic) boundary residuals at the two contacts."""
+    # The two contact points as an (N, 1) column, the shape the net expects.
     x_bc = torch.tensor([[X_LEFT], [X_RIGHT]], dtype=torch.float32)
     phi_bc_pred = phi_net(x_bc)
     phi_bc_true = torch.tensor([[phi_bc_left], [phi_bc_right]], dtype=torch.float32)
@@ -173,7 +193,10 @@ def total_loss():
 
 # Step 9: optimizer + decaying learning-rate schedule
 EPOCHS = 8000
-milestones = [2000, 4000, 5500, 7000]   # decay points (fewer than DDNet's 8 -- simpler problem)
+milestones = [2000, 4000, 5500, 7000]   # learning-rate decay points
+# .parameters() yields the module's trainable tensors; Adam updates them from
+# the .grad values backward() fills in. MultiStepLR scales the learning rate
+# by gamma at each milestone epoch.
 optimizer = torch.optim.Adam(phi_net.parameters(), lr=1e-2)
 scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.1)
 
@@ -181,9 +204,14 @@ RESAMPLE_EVERY = 100   # Step 10: resample collocation points periodically
 
 print("\nTraining Poisson-only PINN...")
 for epoch in range(EPOCHS):
+    # backward() accumulates into .grad, so the previous epoch's gradients
+    # have to be cleared first or they would compound.
     optimizer.zero_grad()
     loss, l_int, l_bc = total_loss()
-    loss.backward()             # backprop through the AD graph (Step 10)
+    # backward() walks the graph from the scalar loss, writing d(loss)/d(param)
+    # into each parameter's .grad and freeing the graph (Step 10); step() then
+    # applies the update, and the LR schedule advances.
+    loss.backward()
     optimizer.step()
     scheduler.step()
 
@@ -204,12 +232,15 @@ for epoch in range(EPOCHS):
 
 x_eval = np.linspace(X_LEFT, X_RIGHT, 400).astype(np.float32)
 x_eval_t = torch.tensor(x_eval.reshape(-1, 1), requires_grad=False)
+# no_grad() switches off graph recording: only values are read here, nothing
+# is differentiated. numpy() then views the tensor as an array, which is only
+# legal for a tensor carrying no graph.
 with torch.no_grad():
     phi_pred = phi_net(x_eval_t).numpy().flatten()
 
 phi_true, xd = analytic_reference(x_eval)
 
-# relative L1 error, as used throughout the paper
+# Relative L1 error, as used throughout the DDNet paper.
 rel_L1 = np.sum(np.abs(phi_pred - phi_true)) / np.sum(np.abs(phi_true))
 print(f"\nDepletion half-width (scaled units): {xd:.4f}")
 print(f"Relative L1 error vs. analytic depletion-approximation solution: {rel_L1*100:.3f}%")

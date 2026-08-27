@@ -13,7 +13,8 @@ Modules
 ``densities``     n-Net/p-Net, the log parametrisation, currents,
                   recombination and the continuity residuals.
 ``boundaries``    thermionic injecting contacts and their flux balance.
-``loss_weights``  the weight rules: fixed, or adaptive inverse-Dirichlet.
+``loss_weights``  the weight rules: fixed, or adaptive (inverse-Dirichlet,
+                  SoftAdapt).
 ``pinn_dd``       ``PINNProblem``, which bundles the three networks together.
 ``training``      the Adam training loop.
 ``reporting``     scoring against a reference, current reporting, plotting.
@@ -26,6 +27,7 @@ from .loss_weights import (
     LOSS_TERMS,
     FixedWeights,
     InverseDirichletWeights,
+    SoftAdaptWeights,
     LossWeights,
     make_weights,
 )
@@ -67,6 +69,7 @@ __all__ = [
     "LossWeights",
     "FixedWeights",
     "InverseDirichletWeights",
+    "SoftAdaptWeights",
     "make_weights",
     "DEFAULT_LOSS_WEIGHTS",
     "LOSS_TERMS",
