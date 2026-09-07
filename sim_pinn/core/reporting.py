@@ -20,13 +20,16 @@ def relative_L1(pred, true):
 
 
 def evaluate(problem, *, x_hat, phi_true_V, n_true, p_true, bias=None,
-             interior=slice(1, -1)):
+             x_cm=None, interior=slice(1, -1)):
     """Compare the trained networks against a reference solution.
 
     x_hat : scaled evaluation coordinates, shape (N,).
     phi_true_V, n_true, p_true : reference potential (V) and densities (cm^-3)
         at those coordinates.
     bias : applied bias in volts, for the printed header only.
+    x_cm : evaluation coordinates in cm. Given, the reference currents are
+        finite-differenced from the reference profiles so Jn(x)/Jp(x) can be
+        plotted against the prediction.
     interior : slice excluding contact nodes, where minority-carrier pins may
         be discontinuities the networks are deliberately not fit to.
 
@@ -68,6 +71,22 @@ def evaluate(problem, *, x_hat, phi_true_V, n_true, p_true, bias=None,
 
     max_abs_phi = np.max(np.abs(phi_pred_V - phi_true_V))
 
+    # Current profiles, for the Jn(x)/Jp(x) panels. These need derivatives, so
+    # they are taken outside the no_grad() block above via problem.fields(),
+    # which is the same path training uses -- the plotted currents are exactly
+    # the ones the residuals are built from, not a finite-difference rederivation.
+    x_grad_t = torch.as_tensor(
+        x_hat.reshape(-1, 1), dtype=problem.dtype,
+        device=problem.device).requires_grad_(True)
+    _, dphi_g, _, n_hat_g, p_hat_g, dn_g, dp_g = problem.fields(x_grad_t)
+    Jn_t, Jp_t = problem.scaled_currents(
+        dphi_g, n_hat_g, p_hat_g, dn_g, dp_g, x_grad_t)
+    # detach() before numpy(): fields() built a graph with create_graph=True
+    # and these are only being reported.
+    j_scale = scaling["j_scale"]
+    Jn_pred = Jn_t.detach().cpu().numpy().flatten().astype(np.float64) * j_scale
+    Jp_pred = Jp_t.detach().cpu().numpy().flatten().astype(np.float64) * j_scale
+
     print()
     print("=" * 70)
     header = "Comparison against reference" if bias is None else \
@@ -82,14 +101,26 @@ def evaluate(problem, *, x_hat, phi_true_V, n_true, p_true, bias=None,
     print("  p    relative L1 (lin)  : {0:.4e}  ({1:.3f} %)".format(rel_p_lin, rel_p_lin * 100))
     print("  (densities scored on interior nodes only; contact pins excluded)")
 
-    return {
+    out = {
         # Profiles, prediction and reference side by side, for plot().
         "phi_pred": phi_pred_V, "phi_true": phi_true_V,
         "n_pred": n_pred, "n_true": n_true,
         "p_pred": p_pred, "p_true": p_true,
+        "Jn_pred": Jn_pred, "Jp_pred": Jp_pred,
         # Headline errors, also used in the figure titles.
         "rel_phi": rel_phi, "rel_n_log": rel_n_log, "rel_p_log": rel_p_log,
     }
+
+    # Reference currents, finite-differenced from the stored profiles on the
+    # same grid, so the plotted comparison is like for like.
+    if x_cm is not None:
+        mu_n, mu_p = scaling["mu_n"], scaling["mu_p"]
+        dphi_ref = np.gradient(phi_true_V, x_cm)
+        out["Jn_true"] = Q * mu_n * (
+            Ut * np.gradient(n_true, x_cm) - n_true * dphi_ref)
+        out["Jp_true"] = -Q * mu_p * (
+            Ut * np.gradient(p_true, x_cm) + p_true * dphi_ref)
+    return out
 
 
 def report_currents(problem, *, x_hat, x_cm=None, ref_potential_V=None,
@@ -113,7 +144,7 @@ def report_currents(problem, *, x_hat, x_cm=None, ref_potential_V=None,
     ).requires_grad_(True)
 
     _, dphi, _, n_hat, p_hat, dn, dp = problem.fields(x_t)
-    Jn, Jp = problem.scaled_currents(dphi, n_hat, p_hat, dn, dp)
+    Jn, Jp = problem.scaled_currents(dphi, n_hat, p_hat, dn, dp, x_t)
 
     j_scale = problem.scaling["j_scale"]
     # detach() before .numpy(): fields() built a graph via create_graph=True,
@@ -228,8 +259,14 @@ def report_thermionic(problem):
 # Plotting
 # ============================================================
 
+# Vertical range of the carrier-density panel, cm^-3. The contact pins sit
+# ~30 decades below the bulk, so the axis is clipped to the band the device
+# physics occupies rather than autoscaled to the pins.
+DENSITY_PLOT_YLIM = (1.0e10, 1.0e15)
+
+
 def plot(res, history_epochs, history_losses, x_nm, bias, filename):
-    """Four-panel summary figure: potential, its error, densities, loss curve.
+    """Six-panel summary: potential, its error, densities, loss, Jn(x), Jp(x).
 
     res : the dict returned by ``evaluate``.
     history_epochs, history_losses : the loss curve from ``train``.
@@ -239,7 +276,7 @@ def plot(res, history_epochs, history_losses, x_nm, bias, filename):
     """
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    fig, axes = plt.subplots(3, 2, figsize=(12, 13.5))
 
     # (a) Potential: PINN against reference.
     ax = axes[0, 0]
@@ -274,6 +311,11 @@ def plot(res, history_epochs, history_losses, x_nm, bias, filename):
                 label="n (PINN, n-Net)")
     ax.semilogy(x_nm, res["p_pred"], "--", lw=1.6, color="tab:orange",
                 label="p (PINN, p-Net)")
+    # Clip the view to the decades the physics lives in. The minority pins
+    # run to ~1e-16 and the predictions can undershoot further still; on a
+    # full-range axis that compresses the 1e10-1e15 band the profiles and
+    # their boundary layers actually occupy into a few pixels.
+    ax.set_ylim(DENSITY_PLOT_YLIM)
     ax.set_xlabel(r"$x$ [nm]")
     ax.set_ylabel(r"carrier density [cm$^{-3}$]")
     ax.set_title("(c) Carrier densities (rel. $L_1^{{\\log}}$: "
@@ -289,6 +331,34 @@ def plot(res, history_epochs, history_losses, x_nm, bias, filename):
     ax.set_ylabel(r"$\mathcal{L}_{\rm tot}$")
     ax.set_title("(d) Training loss")
     ax.grid(alpha=0.3, which="both")
+
+    # (e), (f) Current profiles. Linear y: the point is whether each current is
+    # FLAT and at the right level, which a log axis would hide. In 1D steady
+    # state Jn + Jp is independent of x, so any slope here is a residual error.
+    for ax, key, name, colour in ((axes[2, 0], "Jn", "J_n", "tab:red"),
+                                  (axes[2, 1], "Jp", "J_p", "tab:orange")):
+        pred = res.get(key + "_pred")
+        true = res.get(key + "_true")
+        if pred is None:
+            ax.set_visible(False)
+            continue
+        if true is not None:
+            # Contact nodes dropped: the reference current is finite-differenced
+            # across the minority-pin discontinuity there and is meaningless.
+            ax.plot(x_nm[1:-1], true[1:-1], "-", lw=3, alpha=0.45,
+                    color="tab:blue", label="reference")
+        ax.plot(x_nm, pred, "--", lw=1.6, color=colour, label="PINN")
+        ax.set_xlabel(r"$x$ [nm]")
+        ax.set_ylabel(r"$" + name + r"$ [A cm$^{-2}$]")
+        # Spread of the prediction over the interior, the same self-consistency
+        # measure report_currents() prints.
+        interior = pred[1:-1]
+        spread = (100 * np.ptp(interior) / abs(np.mean(interior))
+                  if np.mean(interior) else float("nan"))
+        ax.set_title("({0}) ${1}(x)$  (PINN mean {2:+.3e}, spread {3:.2f} %)".format(
+            "e" if key == "Jn" else "f", name, np.mean(interior), spread))
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
 
     fig.tight_layout()
     fig.savefig(filename, dpi=150)
@@ -365,4 +435,58 @@ def plot_weights(weighting, filename, bias=None, clip_decades=6.0):
 
     fig.savefig(filename, dpi=150)
     print("Saved weight-evolution plot to {0}".format(filename))
+    return fig
+
+
+def plot_iv(iv_npz, summaries, filename, v_min=None, built_in_voltage=None):
+    """Semilog J-V curve: DEVSIM reference line, PINN terminal currents as points.
+
+    iv_npz : path to the DEVSIM sweep archive, holding ``voltages_full`` and
+        ``current_A_full`` (A/cm^2).
+    summaries : the per-bias dicts from ``run_bias``, each with "bias" and
+        "j_pinn" (A/cm^2). One marker is drawn per entry.
+    filename : path to write the PNG to.
+    v_min : left edge of the x-axis. Defaults to 0.1 V below the lowest
+        recorded bias, keeping the view on the turn-on region and above rather
+        than the many decades of sub-threshold leakage.
+    built_in_voltage : if given, marked with a vertical line as the turn-on.
+
+    Currents are plotted in mA/cm^2, the usual unit for a device J-V.
+    """
+    import matplotlib.pyplot as plt
+
+    data = np.load(iv_npz)
+    V = data["voltages_full"]
+    J = data["current_A_full"] * 1e3            # A/cm^2 -> mA/cm^2
+
+    v_pinn = np.array([s["bias"] for s in summaries])
+    j_pinn = np.array([s["j_pinn"] for s in summaries]) * 1e3
+
+    if v_min is None:
+        v_min = (v_pinn.min() if len(v_pinn) else V.min()) - 0.1
+
+    # Restrict to the window being plotted before taking limits, so the
+    # sub-threshold decades do not set the y-scale.
+    win = V >= v_min
+    fig, ax = plt.subplots(figsize=(7.5, 5.5))
+    ax.semilogy(V[win], J[win], "-", lw=2.5, alpha=0.7, color="tab:blue",
+                label="DEVSIM reference")
+    ax.semilogy(v_pinn, j_pinn, "o", ms=7, mfc="none", mew=1.8,
+                color="tab:red", label="PINN (SoftAdapt)")
+
+    if built_in_voltage is not None and built_in_voltage >= v_min:
+        ax.axvline(built_in_voltage, color="0.5", lw=1.0, ls=":")
+        ax.text(built_in_voltage, ax.get_ylim()[0], r" $V_{\rm bi}$",
+                va="bottom", ha="left", fontsize=9, color="0.4")
+
+    ax.set_xlim(v_min, max(V[win].max(), v_pinn.max() + 0.1))
+    ax.set_xlabel(r"applied bias $V$ [V]")
+    ax.set_ylabel(r"$J_{\rm tot}$ [mA cm$^{-2}$]")
+    ax.set_title("Terminal current: PINN against DEVSIM")
+    ax.legend()
+    ax.grid(alpha=0.3, which="both")
+
+    fig.tight_layout()
+    fig.savefig(filename, dpi=150)
+    print("Saved J-V plot to {0}".format(filename))
     return fig

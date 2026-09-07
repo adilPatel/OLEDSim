@@ -6,6 +6,9 @@ This project is aimed at simulating OLED devices using physics-informed neural n
 ## Solver 1: DEVSIM-based Solver
 This solves the drift-diffusion semiconductor equations using a conventional Newton-based PDE solver. It also uses Gummel preconditioning to aid convergence. Below are the current capabilites and the planned future work.
 
+### Implementation Details
+This solver uses the DEVSIM library for meshing and solving the drift-diffusion equations. All governing equations are written analytically and DEVSIM discretises them then numerically solves the system via the Newton-Raphson method.
+
 ### Current Capabilities
 - Ohmic and thermionic carrier injection.
 - Langevin recombination.
@@ -22,6 +25,9 @@ This solves the drift-diffusion semiconductor equations using a conventional New
 ## Solver 2: PINN Solver
 
 In its current state, this encodes the drift-diffusion equations as loss functions that are minimised in a fully-connected neural network model. It is composed of three sub-networks that independently solve the potential, electron densities, and hole densities.
+
+### Implementation Details
+The code is implemented in Python using the PyTorch framework. The numerical accuracy is 32-bit floating point, and GPU acceleration is enabled. All training runs have been conducted on a MacBook Pro with an M1 Pro processor. 
 
 ### Current Capabilities
 - Ohmic injection.

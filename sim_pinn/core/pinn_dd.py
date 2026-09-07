@@ -15,7 +15,7 @@ multipliers.
 import numpy as np
 import torch
 
-from . import boundaries, densities, poisson
+from . import boundaries, densities, densities_qf, poisson
 from .loss_weights import DEFAULT_LOSS_WEIGHTS, FixedWeights, LossWeights
 from .networks import d_dx
 
@@ -42,6 +42,10 @@ class PINNProblem:
     loss_weights : a ``LossWeights``, or a dict of overrides on
         DEFAULT_LOSS_WEIGHTS (wrapped in ``FixedWeights``).
     beta_concentration : shape of the collocation sampling distribution.
+    quasi_fermi : parametrise the densities by their quasi-Fermi potentials
+        (``densities_qf``) rather than by u = -log(density_hat)
+        (``densities``). The pin arguments above then carry quasi-Fermi
+        values instead of u values; everything else is unchanged.
     normalize_poisson, poisson_residual_floor : passed to the Poisson residual.
     """
 
@@ -51,7 +55,7 @@ class PINNProblem:
                  u_n_bc_left=None, u_p_bc_right=None,
                  thermionic_left=None, thermionic_right=None,
                  loss_weights=None, beta_concentration=1.0,
-                 normalize_poisson=False,
+                 quasi_fermi=False, normalize_poisson=False,
                  poisson_residual_floor=poisson.POISSON_RESIDUAL_FLOOR):
         self.phi_net = phi_net
         self.n_net = n_net
@@ -59,6 +63,12 @@ class PINNProblem:
         self.scaling = scaling
         self.device = device
         self.dtype = dtype
+
+        # Which density parametrisation is in use. Both modules expose the
+        # same names, so the residual code below calls through this handle
+        # rather than branching on the flag at every use.
+        self.quasi_fermi = quasi_fermi
+        self._dens = densities_qf if quasi_fermi else densities
 
         self.x_left = x_left
         self.x_right = x_right
@@ -172,13 +182,29 @@ class PINNProblem:
         phi = self.phi_net(x)
         dphi = d_dx(phi, x)
         d2phi = d_dx(dphi, x)          # Poisson needs the second derivative
-        n_hat, p_hat, dn, dp = densities.evaluate_densities(
-            self.n_net, self.p_net, x)
+        if self.quasi_fermi:
+            # phi is passed through: the quasi-Fermi densities are built from
+            # it, and it has already been evaluated on these points.
+            n_hat, p_hat, dn, dp = self._dens.evaluate_densities(
+                self.n_net, self.p_net, x, phi)
+        else:
+            n_hat, p_hat, dn, dp = self._dens.evaluate_densities(
+                self.n_net, self.p_net, x)
         return phi, dphi, d2phi, n_hat, p_hat, dn, dp
 
-    def scaled_currents(self, dphi, n_hat, p_hat, dn, dp):
-        """Scaled Jn, Jp at the given fields (see densities.scaled_currents)."""
-        return densities.scaled_currents(
+    def scaled_currents(self, dphi, n_hat, p_hat, dn, dp, x):
+        """Scaled Jn, Jp at the given fields.
+
+        The quasi-Fermi form needs x rather than the density derivatives: its
+        currents are -mu*density*qf', so it differentiates the networks' own
+        output instead of reusing dn/dp (see densities_qf.scaled_currents).
+        """
+        if self.quasi_fermi:
+            return self._dens.scaled_currents(
+                self.n_net, self.p_net, x, n_hat, p_hat,
+                mu_n_hat=self.scaling["mu_n_hat"],
+                mu_p_hat=self.scaling["mu_p_hat"])
+        return self._dens.scaled_currents(
             dphi, n_hat, p_hat, dn, dp,
             mu_n_hat=self.scaling["mu_n_hat"],
             mu_p_hat=self.scaling["mu_p_hat"])
@@ -186,11 +212,20 @@ class PINNProblem:
     def continuity_residuals(self, x, dphi, n_hat, p_hat, dn, dp):
         """The two continuity residuals, plus the currents they were built
         from -- which the current-constancy term also needs."""
-        Jn, Jp = self.scaled_currents(dphi, n_hat, p_hat, dn, dp)
-        R = densities.langevin_recombination(
-            n_hat, p_hat,
-            prefactor=self.scaling["langevin_prefactor"],
-            nie_hat=self.scaling["nie_hat"])
+        Jn, Jp = self.scaled_currents(dphi, n_hat, p_hat, dn, dp, x)
+        if self.quasi_fermi:
+            # Built from the quasi-Fermi split, so the -1 that zeroes R at
+            # equilibrium is not lost against nie_hat^2 in float32.
+            R = self._dens.langevin_recombination(
+                self.n_net, self.p_net, x,
+                prefactor=self.scaling["langevin_prefactor"],
+                nie_hat=self.scaling["nie_hat"])
+        else:
+            R = self._dens.langevin_recombination(
+                n_hat, p_hat,
+                prefactor=self.scaling["langevin_prefactor"],
+                nie_hat=self.scaling["nie_hat"])
+        # The continuity residuals are the same operator either way.
         r_n, r_p = densities.continuity_residuals(x, Jn, Jp, R)
         return r_n, r_p, Jn, Jp
 
@@ -210,16 +245,16 @@ class PINNProblem:
         p_hard_L, p_hard_R = self.p_net.hard_ends
 
         # Majority pins: holes at the left contact, electrons at the right.
-        L = L + densities.pin_loss(
+        L = L + self._dens.pin_loss(
             self.p_net, self._x_bc_left, self._u_p_bc_left, p_hard_L)
-        L = L + densities.pin_loss(
+        L = L + self._dens.pin_loss(
             self.n_net, self._x_bc_right, self._u_n_bc_right, n_hard_R)
 
         # Minority pins, the reverse carrier at each contact.
         if not self.majority_only_bc:
-            L = L + densities.pin_loss(
+            L = L + self._dens.pin_loss(
                 self.n_net, self._x_bc_left, self._u_n_bc_left, n_hard_L)
-            L = L + densities.pin_loss(
+            L = L + self._dens.pin_loss(
                 self.p_net, self._x_bc_right, self._u_p_bc_right, p_hard_R)
 
         return L
@@ -255,6 +290,9 @@ class PINNProblem:
             # Mean squared residual over the batch, one scalar tensor each.
             "cont_n": torch.mean(r_n ** 2),
             "cont_p": torch.mean(r_p ** 2),
+            # Not independent of the two continuity terms above -- its
+            # integrand is their sum, so it only re-penalises their correlated
+            # part. See densities.current_constancy_residual.
             "jtot": densities.current_constancy_residual(Jn, Jp),
             # Contacts: Dirichlet pins, and the flux balance replacing them at
             # a thermionic contact.
@@ -282,7 +320,7 @@ def build_problem(*, phi_net, n_net, p_net, scaling, device, dtype,
                   u_n_bc_left=None, u_p_bc_right=None,
                   thermionic_left=None, thermionic_right=None,
                   loss_weights=None, beta_concentration=1.0,
-                  normalize_poisson=False,
+                  quasi_fermi=False, normalize_poisson=False,
                   poisson_residual_floor=poisson.POISSON_RESIDUAL_FLOOR):
     """Factory wrapping ``PINNProblem``'s constructor, so call sites read as
     "build the problem" and there is room for validation later. Arguments are
@@ -297,26 +335,53 @@ def build_problem(*, phi_net, n_net, p_net, scaling, device, dtype,
         u_n_bc_left=u_n_bc_left, u_p_bc_right=u_p_bc_right,
         thermionic_left=thermionic_left, thermionic_right=thermionic_right,
         loss_weights=loss_weights, beta_concentration=beta_concentration,
-        normalize_poisson=normalize_poisson,
+        quasi_fermi=quasi_fermi, normalize_poisson=normalize_poisson,
         poisson_residual_floor=poisson_residual_floor,
     )
 
 
 def build_networks(*, width, depth, u_n_offset, u_p_offset=None, device,
-                   phi_bc=None, u_n_bc=None, u_p_bc=None):
+                   phi_bc=None, u_n_bc=None, u_p_bc=None,
+                   quasi_fermi=False, log_nie_hat=None, bc_decay=None,
+                   qf_interior=None):
     """Construct phi-Net, n-Net and p-Net.
 
     width, depth : shared backbone geometry.
     u_n_offset, u_p_offset : log-space initialisation offsets, typically the
-        interior mean of -log(density_hat) from a reference profile.
+        interior mean of -log(density_hat) from a reference profile. Ignored
+        under quasi_fermi, where the pinned ends already set the scale.
     phi_bc : (phi_hat_left, phi_hat_right) to switch phi-Net to the hard
         ansatz. Pass the same values to ``build_problem`` so the reporting
         agrees; the redundant penalty is then dropped automatically.
-    u_n_bc, u_p_bc : the same for the density pins, each (u_left, u_right)
-        with either entry None to leave that end free -- the normal case under
-        majority_only_bc.
+    u_n_bc, u_p_bc : the same for the density pins, each (left, right) with
+        either entry None to leave that end free -- the normal case under
+        majority_only_bc. Under quasi_fermi these carry quasi-Fermi values
+        rather than u values.
+    quasi_fermi : build QuasiFermiNet density networks instead of
+        LogDensityNet ones.
+    log_nie_hat : scaling["log_nie_hat"], required when quasi_fermi is set.
+    bc_decay : quasi-Fermi only, and only when both ends of a net are pinned.
+        Decay length (scaled) of the localised boundary shape functions;
+        None keeps the linear interpolant. See QuasiFermiNet.
+    qf_interior : optional {"n": dict, "p": dict} of the analytic interior
+        term's coefficients (interior_offset / interior_slope /
+        interior_bump), passed through to each QuasiFermiNet.
     """
     phi_net = poisson.PhiNet(width=width, depth=depth, phi_bc=phi_bc).to(device)
+    if quasi_fermi:
+        if log_nie_hat is None:
+            raise ValueError("quasi_fermi=True requires log_nie_hat")
+        # Both density nets read phi-Net to form their densities, so it is
+        # constructed first and handed to them.
+        n_net = densities_qf.QuasiFermiNet(
+            width=width, depth=depth, phi_net=phi_net, carrier="n",
+            log_nie_hat=log_nie_hat, qf_bc=u_n_bc, bc_decay=bc_decay,
+            u_offset=u_n_offset, **(qf_interior or {}).get("n", {})).to(device)
+        p_net = densities_qf.QuasiFermiNet(
+            width=width, depth=depth, phi_net=phi_net, carrier="p",
+            log_nie_hat=log_nie_hat, qf_bc=u_p_bc, bc_decay=bc_decay,
+            u_offset=u_p_offset, **(qf_interior or {}).get("p", {})).to(device)
+        return phi_net, n_net, p_net
     n_net = densities.LogDensityNet(width=width, depth=depth,
                                     u_offset=u_n_offset, u_bc=u_n_bc).to(device)
     p_net = densities.LogDensityNet(width=width, depth=depth,

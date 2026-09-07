@@ -14,7 +14,38 @@ the scaled system
     Jn_hat               =  mu_n_hat*(n_hat' - n_hat*phi_hat')
     Jp_hat               = -mu_p_hat*(p_hat' + p_hat*phi_hat')
 
-with lambda = L_D/ell and L_D = sqrt(eps*Ut/(q*c_tilde)). Full derivation in
+with lambda = L_D/ell and L_D = sqrt(eps*Ut/(q*c_tilde)).
+
+Two parametrisations of the carrier densities share this scaling; which one
+is in use is a choice made per device, not a change of units.
+
+Logarithmic (``densities.py``)
+    The networks emit u = -log(density_hat), so
+
+        n_hat = exp(-u_n)        n_hat' = -u_n' * n_hat
+
+Quasi-Fermi (``densities_qf.py``)
+    The networks emit the quasi-Fermi potentials phi_n, phi_p, scaled by Ut
+    exactly as phi is. The densities follow from the Boltzmann relations
+
+        n_hat = nie_hat * exp(phi_hat - phi_n_hat)
+        p_hat = nie_hat * exp(phi_p_hat - phi_hat)
+
+    and substituting them into Jn_hat, Jp_hat above cancels drift against
+    diffusion identically, leaving
+
+        Jn_hat = -mu_n_hat * n_hat * phi_n_hat'
+        Jp_hat = -mu_p_hat * p_hat * phi_p_hat'
+
+    Recombination follows the same substitution, the tiny nie_hat^2 factoring
+    out of a difference that is then O(1):
+
+        R_hat = prefactor * nie_hat^2 * (exp(phi_p_hat - phi_n_hat) - 1)
+
+    Poisson and the two continuity equations are unchanged in form; only the
+    expressions substituted into them differ.
+
+Full derivation and the motivation for the quasi-Fermi form in
 Models_neural.md.
 """
 
@@ -61,6 +92,12 @@ def compute_scaling(*, eps_r, T, mu_n, mu_p, homo, lumo, nc300, nv300,
     lam = lam_D / ell                                # scaled Debye parameter
 
     nie_hat = nie / c_tilde
+    # log(nie_hat) is what the quasi-Fermi parametrisation actually uses: the
+    # densities are formed as exp(log_nie_hat + phi_hat - phi_n_hat), keeping
+    # the multiplication by a ~1e-16 constant inside the exponent where it is
+    # an exact addition. Also the offset between a quasi-Fermi level and its
+    # Ohmic contact potential (see densities_qf.ohmic_quasi_fermi_bc).
+    log_nie_hat = np.log(nie_hat)
     # Langevin prefactor gammar*(q/eps)*(mu_n + mu_p), scaled: densities enter
     # as a product (c_tilde^2) and the whole rate is divided by R_tilde.
     R_tilde = mu_tilde * Ut * c_tilde / (ell ** 2)
@@ -101,7 +138,7 @@ def compute_scaling(*, eps_r, T, mu_n, mu_p, homo, lumo, nc300, nv300,
     return {
         # Bulk scaling, read by the residuals.
         "eps_org": eps_org, "Ut": Ut, "eg": eg,
-        "nie": nie, "nie_hat": nie_hat,
+        "nie": nie, "nie_hat": nie_hat, "log_nie_hat": log_nie_hat,
         "mu_tilde": mu_tilde, "mu_n_hat": mu_n_hat, "mu_p_hat": mu_p_hat,
         "lam_D": lam_D, "lam": lam,
         "langevin_prefactor": langevin_prefactor,

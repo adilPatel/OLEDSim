@@ -12,6 +12,8 @@ Modules
 ``poisson``       phi-Net, its boundary ansatz, the Poisson residual.
 ``densities``     n-Net/p-Net, the log parametrisation, currents,
                   recombination and the continuity residuals.
+``densities_qf``  the same in the quasi-Fermi parametrisation, selected by
+                  ``build_problem(quasi_fermi=True)``.
 ``boundaries``    thermionic injecting contacts and their flux balance.
 ``loss_weights``  the weight rules: fixed, or adaptive (inverse-Dirichlet,
                   SoftAdapt).
@@ -22,6 +24,7 @@ Modules
 
 from .boundaries import ThermionicContact, injection_current, reduced_field
 from .densities import LogDensityNet
+from .densities_qf import QuasiFermiNet, ohmic_quasi_fermi_bc
 from .loss_weights import (
     DEFAULT_LOSS_WEIGHTS,
     LOSS_TERMS,
@@ -37,6 +40,7 @@ from .poisson import POISSON_RESIDUAL_FLOOR, PhiNet
 from .reporting import (
     evaluate,
     plot,
+    plot_iv,
     plot_weights,
     relative_L1,
     report_currents,
@@ -50,6 +54,8 @@ __all__ = [
     "FCNN",
     "PhiNet",
     "LogDensityNet",
+    "QuasiFermiNet",
+    "ohmic_quasi_fermi_bc",
     "d_dx",
     # scaling
     "Q",
@@ -80,5 +86,6 @@ __all__ = [
     "report_currents",
     "report_thermionic",
     "plot",
+    "plot_iv",
     "plot_weights",
 ]

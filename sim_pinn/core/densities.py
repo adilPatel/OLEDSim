@@ -191,6 +191,30 @@ def current_constancy_residual(Jn, Jp):
 
     Taken as the variance of Jn + Jp over the batch, which enforces constancy
     without needing to know the constant's value.
+
+    Why this is not independent of the continuity residuals
+    -------------------------------------------------------
+    Summing them, the recombination cancels:
+
+        r_n + r_p = (Jn' - R) + (Jp' + R) = (Jn + Jp)'
+
+    so this term's integrand *is* their sum, and it is zero automatically when
+    both are zero pointwise. It adds no new physics. What it changes is the
+    weighting, because the losses are means of squares:
+
+        mean((r_n + r_p)^2) = mean(r_n^2) + mean(r_p^2) + 2*mean(r_n*r_p)
+
+    i.e. it contributes only the cross term, re-penalising the *correlated*
+    part of the two errors. Residuals that are large but anti-correlated --
+    both carriers mis-transported while the total current is preserved -- are
+    invisible to it.
+
+    It is kept for two reasons. First, it is a different operator: the
+    continuity residuals differentiate Jn and Jp, this one takes a variance
+    over the batch and needs no derivative, which makes it comparatively more
+    sensitive to a slow drift in Jn + Jp than to a ripple.
+    Second, it is cheap and needs no reference solution, so the spread of
+    Jn + Jp is a self-consistency check available during training.
     """
     Jtot = Jn + Jp
     # Variance over the batch. Jtot.mean() stays in the graph deliberately --

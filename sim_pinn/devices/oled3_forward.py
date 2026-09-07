@@ -1,44 +1,58 @@
 """
-oled1_forward.py
+oled3_forward.py
 
-Example: coupled drift-diffusion PINN (DDNet) for OLED1's 100 nm organic
+Example: coupled drift-diffusion PINN (DDNet) for OLED3's 100 nm organic
 active layer with Ohmic contacts, validated against the DEVSIM
-drift-diffusion solver at several applied biases.
+drift-diffusion solver at a single applied bias.
 
 Three networks -- phi-Net, n-Net, p-Net -- trained together against the
 coupled Poisson + continuity system (DDNet Fig. 1). The reusable model,
 loss, scaling and training/eval/plot logic live in ``sim_pinn.core``; this
-script supplies OLED1's device parameters, boundary conditions, and run
+script supplies OLED3's device parameters, boundary conditions, and run
 configuration (loss weights, sampling distribution, epochs, ...).
 
 Device
 ------
-The 100 nm organic layer of ``devsim_reference_oled1.py``: OLED1's contact
-set with the bottom contact's electron density reduced from 1e25 to
-1e17 cm^-3.
+The 100 nm F8BT layer of ``devsim_reference_oled3.py``: LUMO -3.3 eV,
+HOMO -5.9 eV, both effective DOS 1e21 cm^-3, both mobilities 1e-3 cm^2/V-s,
+eps_r 3.5. The device is *symmetric*: the top contact's work function
+(-5.5 eV) sits 0.4 eV above the HOMO and the bottom contact's (-3.7 eV) sits
+0.4 eV below the LUMO, so both Ohmic pins equal N*exp(-0.4/Ut) = 1.95e14
+cm^-3 and the reference solution satisfies n(x) = p(L - x).
+
+Contrast with OLED1
+-------------------
+OLED1's density scale of 1e17 cm^-3 gives a 7.6 nm Debye length, so its
+100 nm device is 13 screening lengths long and the potential is set by two
+thin contact layers. Here the pin is 1.95e14 cm^-3, giving L_D = 162 nm and
+L/L_D = 0.62: the device is shorter than one screening length, the space
+charge barely bends the potential, and phi is close to the straight line
+from V - Vbi = 0.4 V down to 0. The Poisson stiffness that made phi-Net
+OLED1's accuracy bottleneck is therefore absent here.
 
 Boundary conditions
 --------------------
 phi is pinned at both contacts (Dirichlet). The majority carrier density is
 pinned at each contact; the minority carrier is left free (see
 MAJORITY_ONLY_BC below) since the literal DEVSIM pin there is a
-discontinuity a smooth network cannot represent.
+discontinuity a smooth network cannot represent -- the reference minority
+density drops from 1.9e14 to 1.1e-16 cm^-3 across the single contact node.
 
 Multiple biases
 ---------------
-``devsim_reference_oled1.py`` sweeps 2 - 5 V and writes one reference profile
-per bias in BIASES, plus the full IV curve. A separate set of networks is
-trained from scratch at each bias -- nothing is transferred between them, so
-the biases are independent samples of the same configuration -- and each
-writes its own figure. ``main()`` then tabulates the PINN terminal current
-against the DEVSIM one at each bias.
+``devsim_reference_oled3.py`` sweeps up to 3.0 V and writes one reference
+profile per bias in BIASES, plus the full IV curve. A separate set of
+networks is trained from scratch at each bias -- nothing is transferred
+between them, so the biases are independent samples of the same
+configuration -- and each writes its own figure. ``main()`` then tabulates
+the PINN terminal current against the DEVSIM one and draws the semilog J-V.
 
 Running this script trains at every bias in BIASES; import it and call
 ``run_bias(V)`` to do just one.
 
 Usage
 -----
-    python -m sim_pinn.devices.oled1_forward
+    python -m sim_pinn.devices.oled3_forward
 """
 
 import os
@@ -48,9 +62,16 @@ import torch
 
 from sim_pinn import core
 
-# Seeds are re-applied per bias in run_bias() so each run starts identically,
-# rather than inheriting the RNG state left by the previous one.
+# Seed is re-applied in run_bias() so the run starts identically rather than
+# inheriting whatever RNG state the importing process left.
 SEED = 0
+
+# ============================================================
+# Network architecture
+# ============================================================
+
+WIDTH = 64
+DEPTH = 4
 
 # set_default_dtype fixes the precision of every tensor created afterwards.
 # float32 here because the MPS accelerator has no float64.
@@ -86,19 +107,21 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 # Repo root: up out of sim_pinn/devices/.
 _ROOT = os.path.dirname(os.path.dirname(_HERE))
 
-# DEVSIM references + comparison plots live under tests/diode_pinn_1d/oled1,
-# not next to this script (see devsim_reference_oled1.py in that directory).
-_TEST_DIR = os.path.join(_ROOT, "tests", "diode_pinn_1d", "oled1")
-IV_NPZ = os.path.join(_TEST_DIR, "oled1_devsim_iv.npz")
+# DEVSIM reference + comparison plots live under tests/diode_pinn_1d/oled3,
+# not next to this script (see devsim_reference_oled3.py in that directory).
+_TEST_DIR = os.path.join(_ROOT, "tests", "diode_pinn_1d", "oled3")
+
+# Full sweep's current-voltage curve, for the J-V comparison figure.
+IV_NPZ = os.path.join(_TEST_DIR, "oled3_devsim_iv.npz")
 
 # Applied biases to train at. Each needs a matching reference file from
-# devsim_reference_oled1.py (whose TARGET_BIASES must agree with this list).
-BIASES = (2.5, 3.0, 3.3, 3.4, 3.5, 3.6, 3.7, 4.0, 4.5)
+# devsim_reference_oled3.py (whose TARGET_BIASES must agree with this list).
+BIASES = (2.0,)
 
 
 def reference_npz(bias):
     """Path of the DEVSIM reference profile for one bias."""
-    return os.path.join(_TEST_DIR, "oled1_devsim_reference_{0:.1f}V.npz".format(bias))
+    return os.path.join(_TEST_DIR, "oled3_devsim_reference_{0:.1f}V.npz".format(bias))
 
 
 def plot_tag():
@@ -111,56 +134,63 @@ def plot_tag():
     if USE_ADAPTIVE_WEIGHTS:
         tag = {"inverse_dirichlet": "id", "softadapt": "sa"}.get(
             ADAPTIVE_KIND, ADAPTIVE_KIND)
-        if PIN_N_ANODE_FROM_REFERENCE:
-            tag += "_npin"                     # diagnostic gets its own name
-        return tag
-    if USE_HARD_DENSITY_BC or USE_HARD_PHI_BC:
-        return "hdbc"
-    return "demo"
+    elif USE_HARD_DENSITY_BC or USE_HARD_PHI_BC:
+        tag = "hdbc"
+    else:
+        tag = "demo"
+    # The parametrisation gets its own suffix so a quasi-Fermi run cannot
+    # overwrite the log-form figures it is being compared against.
+    return tag + "_qf" if USE_QUASI_FERMI else tag
 
 
 def plot_png(bias):
     """Path of the comparison figure for one bias."""
-    return os.path.join(_TEST_DIR, "oled1_forward_{0}_{1:.1f}V.png".format(
+    return os.path.join(_TEST_DIR, "oled3_forward_{0}_{1:.1f}V.png".format(
         plot_tag(), bias))
 
 
 def iv_png():
     """Path of the J-V comparison figure for the whole sweep."""
-    return os.path.join(_TEST_DIR, "oled1_forward_{0}_JV.png".format(plot_tag()))
+    return os.path.join(_TEST_DIR, "oled3_forward_{0}_JV.png".format(plot_tag()))
 
 
 def weights_png(bias):
     """Path of the adaptive-weight evolution figure for one bias."""
-    return os.path.join(_TEST_DIR, "oled1_forward_{0}_weights_{1:.1f}V.png".format(
+    return os.path.join(_TEST_DIR, "oled3_forward_{0}_weights_{1:.1f}V.png".format(
         plot_tag(), bias))
 
 
 # ============================================================
-# Device / material parameters (OLED1, 100 nm organic layer)
+# Device / material parameters (OLED3, 100 nm organic layer)
 # ============================================================
 
-EPS_R  = 4.0                 # OLED1's relative permittivity (Device default)
+EPS_R  = 3.5                  # OLED3's relative permittivity
 TEMP_K = 300.0                # K
 
-# Transport parameters: core.device.Device's defaults (devsim_reference.py's
-# make_device() overrides neither mobility nor the densities of states).
-MU_N   = 1.0e-6               # electron mobility, cm^2/V-s
-MU_P   = 1.0e-6               # hole mobility, cm^2/V-s
-NC300  = 1.0e27               # conduction-band effective DOS, cm^-3
-NV300  = 1.0e27               # valence-band effective DOS, cm^-3
+# Transport parameters, from devsim_reference_oled3.py's make_device().
+# Symmetric device: electrons and holes share both mobility and DOS.
+MU_N   = 1.0e-3               # electron mobility, cm^2/V-s
+MU_P   = 1.0e-3               # hole mobility, cm^2/V-s
+NC300  = 1.0e21               # conduction-band effective DOS, cm^-3
+NV300  = 1.0e21               # valence-band effective DOS, cm^-3
 GAMMAR = 1.0                  # Langevin prefactor ("gammar" in os_physics.py)
 
 # HOMO/LUMO of the reference device (implies the intrinsic density nie via
 # core.compute_scaling, following common_physics.py's CreateDensityOfStates
 # at T = 300 K: NIE = sqrt(NC*NV) * exp(-EG/(2*Ut))).
-LUMO = -0.4
-HOMO = LUMO - 2.6             # EG = 2.6 eV
+LUMO = -3.3
+HOMO = -5.9                   # EG = 2.6 eV
 
-# Density scale: the bottom contact's electron density, the largest carrier
-# density in the device. Bias-independent (it is a contact pin), so the same
-# scaling serves every run.
-C_TILDE = 1.0e17              # cm^-3
+# Injection barrier at both contacts: the top work function (-5.5 eV) sits
+# PHI_B above the HOMO, the bottom one (-3.7 eV) sits PHI_B below the LUMO.
+PHI_B = 0.4                   # eV
+
+# Density scale: the Ohmic contact pin, the largest carrier density in the
+# device. Both contacts share PHI_B and both DOS are equal, so the same value
+# N*exp(-PHI_B/Ut) pins holes at the anode and electrons at the cathode.
+# Derived from the device parameters rather than read off the reference, and
+# bias-independent, so one scaling serves every run.
+C_TILDE = NC300 * np.exp(-PHI_B / (core.K_B * TEMP_K / core.Q))   # ~1.95e14 cm^-3
 
 ELL = 100.0e-7                # device length, cm (100 nm)
 
@@ -171,46 +201,42 @@ X_LEFT, X_RIGHT = 0.0, 1.0
 # Which density boundary conditions are actually imposable. At each Ohmic
 # contact DEVSIM pins BOTH carrier densities, but only the majority pin is
 # representable by a smooth network -- the minority pin is a genuine
-# discontinuity in the reference data. So the majority carrier is pinned at
-# each contact and the minority carrier is left free, determined by the
-# continuity equations.
+# discontinuity in the reference data (1.9e14 -> 1.1e-16 cm^-3 across one
+# node). So the majority carrier is pinned at each contact and the minority
+# carrier is left free, determined by the continuity equations.
 #
-# Left contact (anode): holes are the majority carrier.
-# Right contact (cathode): electrons are the majority carrier.
-MAJORITY_ONLY_BC = True
-
-
-# ============================================================
-# Network architecture
-# ============================================================
-
-WIDTH = 64
-DEPTH = 4
+# Left contact (top, anode): holes are the majority carrier.
+# Right contact (bot, cathode): electrons are the majority carrier.
+MAJORITY_ONLY_BC = False
 
 
 # ============================================================
 # Loss weights, sampling, training schedule
 # ============================================================
 
-# Interior collocation points per step: DDNet's own 2^12 = 4096 (Sec. 4.3).
-N_INT = 4096
+# Interior collocation points per step. DDNet uses 2^12 = 4096 (Sec. 4.3);
+# doubled to 2^13 here because BETA_CONCENTRATION = 0.5 moves points from the
+# bulk to the contacts. At 4096 the clustered draw would leave the 10-90 nm
+# bulk with ~2400 points against the uniform draw's ~3270; at 8192 the bulk
+# gets ~4840 AND the outer 2 nm layers ~1480 (against ~165 uniform), so both
+# regions are sampled better than the unclustered baseline rather than traded
+# off against each other.
+N_INT = 8192
 
-# Loss weights (see core.DEFAULT_LOSS_WEIGHTS for the same defaults). The two
-# continuity residuals get separate weights, and Poisson is weighted well
-# above the rest since it is the hardest term to converge.
+# Loss weights (see core.DEFAULT_LOSS_WEIGHTS for the same defaults). Only
+# consulted when USE_ADAPTIVE_WEIGHTS is off.
 LOSS_WEIGHTS = dict(core.DEFAULT_LOSS_WEIGHTS)
 # LOSS_WEIGHTS["poisson"] = 100.0   # override any entry here as needed
 
 # Collocation sampling distribution: symmetric Beta(a, a) on [0, 1]. a = 1
-# recovers uniform sampling; a < 1 clusters points at both contacts.
-BETA_CONCENTRATION = 1.0
+# recovers uniform sampling; a < 1 clusters points at both contacts. Uniform
+# here: at L/L_D = 0.62 there is no thin contact layer to resolve.
+BETA_CONCENTRATION = 0.5
 
 # ---- Adaptive loss weighting -------------------------------------------
 #
-# Why adapt at all: a fixed weight is calibrated to one operating point. The
-# `bc` term grows with the applied bias -- the residual is squared and the
-# contact value scales with the bias -- so a weight balancing it at the bottom
-# of the sweep no longer does at the top. Deriving the weights from the loss
+# Why adapt at all: a fixed weight is calibrated to one operating point, and
+# the terms of this loss span many decades. Deriving the weights from the loss
 # itself tracks that. This balances trainability, not accuracy, so it is
 # scored against DEVSIM rather than assumed to be an improvement.
 USE_ADAPTIVE_WEIGHTS = True
@@ -219,9 +245,9 @@ USE_ADAPTIVE_WEIGHTS = True
 #
 # inverse_dirichlet is retained for reproducibility but is NOT recommended on
 # this loss: lambda_i = max_j(s_j)/s_i pins the largest-spread term at
-# lambda = 1 with no way to raise it, so when that term is Poisson -- the
-# accuracy bottleneck here -- it is starved and stays starved. Which term wins
-# that argmax can turn on numerical noise near a tie.
+# lambda = 1 with no way to raise it, so when that term is the accuracy
+# bottleneck it is starved and stays starved. Which term wins that argmax can
+# turn on numerical noise near a tie.
 #
 # softadapt scores each term by its recent *relative* rate of change and takes
 # a softmax, so the weights are bounded (sum to 1), no term is singled out by
@@ -229,9 +255,8 @@ USE_ADAPTIVE_WEIGHTS = True
 # not amplified.
 ADAPTIVE_KIND = "softadapt"
 
-# Softmax temperature. beta > 0 puts more weight on the slowly-improving terms,
-# which is the direction the hand-set LOSS_WEIGHTS above were chosen to bias
-# towards. With relative rates s_i is O(1), so beta ~ 1 is the scale-free
+# Softmax temperature. beta > 0 puts more weight on the slowly-improving
+# terms. With relative rates s_i is O(1), so beta ~ 1 is the scale-free
 # starting point; beta -> 0 gives uniform weights.
 SA_BETA = 1.0
 
@@ -240,7 +265,7 @@ SA_BETA = 1.0
 SA_UPDATE_EVERY = 10
 
 # Use each term's relative rate s_i / |L_i(t-1)| rather than the raw
-# difference. Effectively required here: the losses span ~12 decades, and an
+# difference. Effectively required here: the losses span many decades, and an
 # absolute rate ranks a term at 1e-13 as "barely changing" however fast it is
 # actually converging (see core.SoftAdaptWeights).
 SA_NORMALIZE = True
@@ -259,6 +284,52 @@ SA_INITIAL_WEIGHTS = {
     "bc": 1.0, "cont_n": 1.0, "cont_p": 1.0, "jtot": 1.0,
     "poisson": 1.0, "thermionic": 1.0,
 }
+
+# ---- Density parametrisation -------------------------------------------
+#
+# False: the networks emit u = -log(density_hat)  (core.densities, DDNet's
+# own form). True: they emit the quasi-Fermi potentials phi_n, phi_p
+# (core.densities_qf), with the densities recovered from the Boltzmann
+# relations. See Models_neural.md, "Quasi-Fermi parametrisation".
+#
+# On this device the log form leaves the unpinned minority ends flat: its
+# continuity residual is multiplied by n_hat ~ 1e-30 there and carries no
+# gradient. The quasi-Fermi current Jn = -mu_n*n*phi_n' keeps a constraint in
+# that region, and the ~30-decade contact roll-off becomes a nearly flat
+# phi_n rather than a 70-unit swing in u.
+USE_QUASI_FERMI = True
+
+
+# Decay length (scaled by the device length) of the quasi-Fermi two-ended
+# boundary shape functions -- see core.QuasiFermiNet. Only used when both ends
+# of a density net are pinned, i.e. MAJORITY_ONLY_BC = False.
+#
+# The linear interpolant a two-ended ansatz normally uses ramps between pins
+# that are ~77 units apart here, while the true phi_n leaves its contact value
+# within ~0.1 nm and sits near the far pin for the rest of the device. Cancelling
+# that ramp needs a bubble amplitude ~5e4, which a tanh network cannot supply;
+# 0.002 (0.2 nm) brings the requirement down to ~1e2.
+QF_BC_DECAY = 0.0005
+
+# Analytic interior term carried inside the quasi-Fermi bubble (see
+# core.QuasiFermiNet). With the localised baseline confined to ~0.25 nm of
+# each contact, the whole interior is otherwise left to the network; this
+# supplies its leading behaviour analytically.
+#
+# QF_INTERIOR_LINEAR: take the linear ramp between the two contacts'
+# equilibrium quasi-Fermi values, phi +/- log(nie_hat). Derived from the
+# contact potentials and the material's nie -- not fitted to the reference.
+# The gradient is the physically meaningful part: Jn = -mu_n*n*phi_n', so a
+# constant phi_n' is the constant-current solution.
+#
+# QF_INTERIOR_BUMP: amplitude of an additional 4x(1-x) term, which vanishes at
+# both contacts and peaks mid-device. 0 disables it. Measured against the
+# reference the required interior correction is a monotone ~11-unit ramp
+# rather than a mid-device bump, so the linear term carries it and this is
+# available as a separate knob rather than a replacement.
+QF_INTERIOR_LINEAR = True
+QF_INTERIOR_BUMP = 0.0
+
 
 # Hard boundary ansatz for phi (see core.PhiNet): the contact values are built
 # into the architecture, so phi satisfies them identically and the `bc` term
@@ -280,31 +351,13 @@ USE_HARD_PHI_BC = True
 # architecturally removes that solution from the hypothesis space.
 USE_HARD_DENSITY_BC = True
 
-# Close n-Net's free anode end with a reference-derived value, making the n
-# ansatz two-ended. The literal contact value cannot be used -- n(0) sits ~25
-# decades below the adjacent node, the discontinuity MAJORITY_ONLY_BC exists
-# to avoid -- so PIN_N_ANODE_AT_NM reads the reference just inside the
-# boundary layer, where the profile is smooth.
-#
-# OFF: the two-ended ansatz interpolates u linearly between the pins, and the
-# bubble x(1-x)N(x) must then supply every deviation while vanishing at BOTH
-# ends. Pinning a point inside the boundary layer fixes the profile exactly
-# where it varies fastest, so the network can no longer place the layer; the
-# one-sided u_R + (1-x)N(x) leaves the anode free with only (1-x) damping.
-# Kept as a diagnostic only -- it reads the reference solution, so it could
-# not generalise to a device without one.
-PIN_N_ANODE_FROM_REFERENCE = False
-
-# Where to read that value, in nm from the anode.
-PIN_N_ANODE_AT_NM = 1.0
-
-# Running-average rate for the weight update. Higher than a magnitude-ratio
-# scheme would use (0.5 against 0.1): the gradient std is a much less noisy
-# statistic than a raw magnitude ratio, so the weights can track it closely
-# without chasing collocation noise.
+# Running-average rate for the inverse-Dirichlet weight update. Higher than a
+# magnitude-ratio scheme would use (0.5 against 0.1): the gradient std is a
+# much less noisy statistic than a raw magnitude ratio, so the weights can
+# track it closely without chasing collocation noise.
 ID_ALPHA = 0.5
 
-# Which terms adapt. None = every term in ID_INITIAL_WEIGHTS. Unlike a
+# Which terms adapt. None = every term in the initial-weights dict. Unlike a
 # reference-anchored scheme there is no distinguished term held fixed: the
 # numerator is a max over the terms themselves, so all of them can adapt.
 ID_TERMS = None
@@ -328,10 +381,10 @@ ID_NORMALIZE = False
 # pass per adapted term, so N > 1 trades adaptation speed for wall-clock.
 ID_UPDATE_EVERY = 10
 
-# Starting weights for the adaptive run. Deliberately all-ones, so the
+# Starting weights for the inverse-Dirichlet run, deliberately all-ones so the
 # trajectory shows what the scheme derives rather than where a hand-set value
-# would put it -- the point is to test the rule, not to seed it with the
-# answer. With ID_ALPHA = 0.5 the running average forgets the start quickly.
+# would put it. With ID_ALPHA = 0.5 the running average forgets the start
+# quickly.
 ID_INITIAL_WEIGHTS = {
     "bc": 1.0, "cont_n": 1.0, "cont_p": 1.0, "jtot": 1.0,
     "poisson": 1.0, "thermionic": 1.0,
@@ -360,6 +413,7 @@ SCALING = core.compute_scaling(
     nc300=NC300, nv300=NV300, gammar=GAMMAR, c_tilde=C_TILDE, ell=ELL,
 )
 
+print("Density scale C_tilde  = {0:.4e} cm^-3".format(C_TILDE))
 print("Thermal voltage Ut     = {0:.6f} V".format(SCALING["Ut"]))
 print("Debye length lambda_D  = {0:.4e} cm  ({1:.4f} nm)".format(
     SCALING["lam_D"], SCALING["lam_D"] * 1e7))
@@ -383,8 +437,8 @@ def load_reference(bias):
     path = reference_npz(bias)
     if not os.path.exists(path):
         raise SystemExit(
-            "Missing {0}.\nRun `python devsim_reference_oled1.py` (from {1}) first "
-            "to generate the DEVSIM reference solutions.".format(path, _TEST_DIR)
+            "Missing {0}.\nRun `python devsim_reference_oled3.py` (from {1}) first "
+            "to generate the DEVSIM reference solution.".format(path, _TEST_DIR)
         )
 
     ref = np.load(path)
@@ -394,8 +448,9 @@ def load_reference(bias):
     holes = ref["holes"]                # cm^-3
     ref_bias = float(ref["bias"])
     vbi = float(ref["built_in_voltage"])
-    # Terminal current in A/cm^2 (1D mesh, unit area -- see the reference
-    # script's module docstring). Older reference files predate this field.
+    # Terminal current in A/cm^2 (1D mesh, unit area). devsim_reference_oled3.py
+    # records no current field, so this is None and the comparison falls back
+    # to the finite-differenced profile current in report_currents().
     ref_current = float(ref["current_A"]) if "current_A" in ref else None
 
     # Scaled reference arrays. Used only for boundary values and for scoring
@@ -409,6 +464,7 @@ def load_reference(bias):
     return {
         # Run metadata.
         "bias": ref_bias, "vbi": vbi, "current_A": ref_current,
+        "built_in_voltage": vbi,
         # Profiles in physical units, for scoring and plotting.
         "x_nm": x_nm, "potential": potential,
         "electrons": electrons, "holes": holes,
@@ -424,14 +480,6 @@ def load_reference(bias):
         "p_bc_left": float(p_hat[0]),
         "p_bc_right": float(p_hat[-1]),
     }
-
-
-def load_iv():
-    """Load the DEVSIM IV curve, or None if the sweep has not been run."""
-    if not os.path.exists(IV_NPZ):
-        return None
-    iv = np.load(IV_NPZ)
-    return {"voltages": iv["voltages"], "current_A": iv["current_A"]}
 
 
 def describe_reference(ref):
@@ -477,38 +525,104 @@ def build(ref):
     # order of magnitude, no shape -- but unavailable without a reference. The
     # generalisable substitute needs none: the contact densities are known
     # device parameters, so -log of their geometric mean gives the same scalar.
-    u_n_init = float(np.mean(-np.log(ref["n_hat"][1:-1])))
-    u_p_init = float(np.mean(-np.log(ref["p_hat"][1:-1])))
-    print()
-    print("Log-space initialisation offsets (interior mean):")
-    print("  u_n offset = {0:+.4f}  -> n_hat ~ {1:.3e}".format(u_n_init, np.exp(-u_n_init)))
-    print("  u_p offset = {0:+.4f}  -> p_hat ~ {1:.3e}".format(u_p_init, np.exp(-u_p_init)))
+    if USE_QUASI_FERMI:
+        # Interior mean of the quasi-Fermi levels implied by the reference,
+        # phi_n = phi_hat - log(n_hat) + log(nie_hat). Under the localised
+        # shape functions the baseline decays to zero away from the contacts,
+        # so this offset is what sets the bulk level.
+        lnie_i = SCALING["log_nie_hat"]
+        # Zero when the analytic interior term already sets the bulk level;
+        # otherwise the interior mean of the reference quasi-Fermi levels.
+        if QF_INTERIOR_LINEAR:
+            u_n_init = u_p_init = 0.0
+        else:
+            u_n_init = float(np.mean(
+                ref["phi_hat"][1:-1] - np.log(ref["n_hat"][1:-1]) + lnie_i))
+            u_p_init = float(np.mean(
+                ref["phi_hat"][1:-1] + np.log(ref["p_hat"][1:-1]) - lnie_i))
+        print()
+        print("Quasi-Fermi initialisation offsets (interior mean):")
+        print("  phi_n offset = {0:+.4f}   phi_p offset = {1:+.4f}".format(
+            u_n_init, u_p_init))
+    else:
+        u_n_init = float(np.mean(-np.log(ref["n_hat"][1:-1])))
+        u_p_init = float(np.mean(-np.log(ref["p_hat"][1:-1])))
+        print()
+        print("Log-space initialisation offsets (interior mean):")
+        print("  u_n offset = {0:+.4f}  -> n_hat ~ {1:.3e}".format(u_n_init, np.exp(-u_n_init)))
+        print("  u_p offset = {0:+.4f}  -> p_hat ~ {1:.3e}".format(u_p_init, np.exp(-u_p_init)))
 
     phi_bc = (ref["phi_bc_left"], ref["phi_bc_right"]) if USE_HARD_PHI_BC else None
 
+    # Contact pin values, in whichever variable the density nets emit. Under
+    # the quasi-Fermi form these come from the contact potential and the
+    # material's nie (core.ohmic_quasi_fermi_bc), not from the reference
+    # densities: at an Ohmic contact the quasi-Fermi levels equal the metal's.
+    if USE_QUASI_FERMI:
+        lnie = SCALING["log_nie_hat"]
+        # Majority pins from the Ohmic equilibrium rule: at a contact whose
+        # majority density IS the density scale, density_hat = 1 and the
+        # quasi-Fermi level is the contact potential offset by log(nie_hat).
+        pin_p_left = core.ohmic_quasi_fermi_bc(
+            ref["phi_bc_left"], log_nie_hat=lnie, carrier="p")
+        pin_n_right = core.ohmic_quasi_fermi_bc(
+            ref["phi_bc_right"], log_nie_hat=lnie, carrier="n")
+        # Minority pins, used only when MAJORITY_ONLY_BC is False. The
+        # equilibrium rule does not apply here -- it assumes density_hat = 1,
+        # true only for the majority carrier -- so these are inverted from the
+        # reference's own contact densities:
+        #     phi_n = phi_hat - log(n_hat) + log(nie_hat)
+        pin_n_left = ref["phi_bc_left"] - np.log(ref["n_bc_left"]) + lnie
+        pin_p_right = ref["phi_bc_right"] + np.log(ref["p_bc_right"]) - lnie
+        print("Quasi-Fermi contact pins (scaled by Ut):")
+        print("  majority: phi_p(anode) = {0:+.4f}   phi_n(cathode) = {1:+.4f}".format(
+            pin_p_left, pin_n_right))
+        print("  minority: phi_n(anode) = {0:+.4f}   phi_p(cathode) = {1:+.4f}".format(
+            pin_n_left, pin_p_right))
+    else:
+        pin_n_left = -np.log(ref["n_bc_left"])
+        pin_n_right = -np.log(ref["n_bc_right"])
+        pin_p_left = -np.log(ref["p_bc_left"])
+        pin_p_right = -np.log(ref["p_bc_right"])
+
     # Density pins, majority carrier only (MAJORITY_ONLY_BC): holes at the
     # anode (x = 0), electrons at the cathode (x = 1). The free end is None,
-    # which LogDensityNet turns into the one-sided ansatz.
+    # which the density net turns into the one-sided ansatz.
     u_n_bc = u_p_bc = None
     if USE_HARD_DENSITY_BC:
-        u_n_bc = (None, -np.log(ref["n_bc_right"]))
-        u_p_bc = (-np.log(ref["p_bc_left"]), None)
+        u_n_bc = (None, pin_n_right)
+        u_p_bc = (pin_p_left, None)
         if not MAJORITY_ONLY_BC:
-            u_n_bc = (-np.log(ref["n_bc_left"]), u_n_bc[1])
-            u_p_bc = (u_p_bc[0], -np.log(ref["p_bc_right"]))
-        elif PIN_N_ANODE_FROM_REFERENCE:
-            # Close n's free (anode) end with a value read from the reference
-            # profile rather than the literal contact pin. Selecting by x_nm
-            # keeps the choice independent of the mesh's node spacing.
-            i = int(np.argmin(np.abs(ref["x_nm"] - PIN_N_ANODE_AT_NM)))
-            n_anode_hat = ref["electrons"][i] / C_TILDE
-            print("  n(anode) pinned to reference at x = {0:.2f} nm: "
-                  "{1:.4e} cm^-3".format(ref["x_nm"][i], ref["electrons"][i]))
-            u_n_bc = (-np.log(n_anode_hat), u_n_bc[1])
+            u_n_bc = (pin_n_left, u_n_bc[1])
+            u_p_bc = (u_p_bc[0], pin_p_right)
+
+    # Interior term coefficients, per carrier. Both carriers share the slope
+    # phi(L) - phi(0): the quasi-Fermi levels track the electrostatic
+    # potential across the bulk, offset by +/- log(nie_hat).
+    qf_interior = None
+    if USE_QUASI_FERMI and (QF_INTERIOR_LINEAR or QF_INTERIOR_BUMP):
+        lin = 1.0 if QF_INTERIOR_LINEAR else 0.0
+        slope = ref["phi_bc_right"] - ref["phi_bc_left"]
+        qf_interior = {
+            "n": dict(interior_offset=lin * (ref["phi_bc_left"] + lnie),
+                      interior_slope=lin * slope,
+                      interior_bump=QF_INTERIOR_BUMP),
+            "p": dict(interior_offset=lin * (ref["phi_bc_left"] - lnie),
+                      interior_slope=lin * slope,
+                      interior_bump=-QF_INTERIOR_BUMP),
+        }
+        print("Quasi-Fermi interior term:")
+        print("  phi_n: {0:+.4f} {1:+.4f}*x   phi_p: {2:+.4f} {3:+.4f}*x".format(
+            qf_interior["n"]["interior_offset"], slope,
+            qf_interior["p"]["interior_offset"], slope))
 
     phi_net, n_net, p_net = core.build_networks(
         width=WIDTH, depth=DEPTH, u_n_offset=u_n_init, u_p_offset=u_p_init,
         device=device, phi_bc=phi_bc, u_n_bc=u_n_bc, u_p_bc=u_p_bc,
+        quasi_fermi=USE_QUASI_FERMI,
+        log_nie_hat=SCALING["log_nie_hat"] if USE_QUASI_FERMI else None,
+        bc_decay=QF_BC_DECAY if USE_QUASI_FERMI else None,
+        qf_interior=qf_interior,
     )
 
     print("Trainable parameters: {0}".format(
@@ -521,12 +635,13 @@ def build(ref):
         x_left=X_LEFT, x_right=X_RIGHT,
         phi_bc_left=ref["phi_bc_left"], phi_bc_right=ref["phi_bc_right"],
         majority_only_bc=MAJORITY_ONLY_BC,
-        u_p_bc_left=-np.log(ref["p_bc_left"]),      # anode: holes (majority)
-        u_n_bc_right=-np.log(ref["n_bc_right"]),    # cathode: electrons (majority)
-        u_n_bc_left=-np.log(ref["n_bc_left"]),      # minority pin, only used if
-        u_p_bc_right=-np.log(ref["p_bc_right"]),    # MAJORITY_ONLY_BC is False
+        u_p_bc_left=pin_p_left,        # anode: holes (majority)
+        u_n_bc_right=pin_n_right,      # cathode: electrons (majority)
+        u_n_bc_left=pin_n_left,        # minority pin, only used if
+        u_p_bc_right=pin_p_right,      # MAJORITY_ONLY_BC is False
         loss_weights=LOSS_WEIGHTS,
         beta_concentration=BETA_CONCENTRATION,
+        quasi_fermi=USE_QUASI_FERMI,
     )
 
 
@@ -568,7 +683,7 @@ def train(problem, weighting):
 
 
 def evaluate(problem, ref):
-    """Score the trained networks against one bias's reference profile."""
+    """Score the trained networks against the reference profile."""
     return core.evaluate(
         problem, x_hat=ref["x_hat"], phi_true_V=ref["potential"],
         n_true=ref["electrons"], p_true=ref["holes"], bias=ref["bias"],
@@ -590,7 +705,7 @@ def plot(res, history_epochs, history_losses, ref, filename=None):
     if filename is None:
         filename = plot_png(ref["bias"])
     return core.plot(res, history_epochs, history_losses,
-                      ref["x_nm"], ref["bias"], filename)
+                     ref["x_nm"], ref["bias"], filename)
 
 
 def run_bias(bias, interior=slice(1, -1)):
@@ -600,8 +715,7 @@ def run_bias(bias, interior=slice(1, -1)):
     print("# Applied bias {0:.2f} V".format(bias))
     print("#" * 70)
 
-    # Reset the RNG per bias, so runs differ only in the bias and not in the
-    # initialisation or the collocation draw.
+    # Reset the RNG so the run is reproducible.
     # manual_seed fixes torch's RNG, which drives both the Xavier weight init
     # and the collocation draw; numpy's seed covers the reference handling.
     torch.manual_seed(SEED)
@@ -615,6 +729,7 @@ def run_bias(bias, interior=slice(1, -1)):
     history_epochs, history_losses = train(problem, weighting)
     res = evaluate(problem, ref)
     _, _, Jtot = report_currents(problem, ref)
+    rec = report_recombination(problem, ref)
     try:
         plot(res, history_epochs, history_losses, ref)
         # The weight-trajectory figure only exists for a rule that records
@@ -645,6 +760,9 @@ def run_bias(bias, interior=slice(1, -1)):
         "j_pinn": j_pinn,
         "j_spread": j_spread,
         "j_devsim": ref["current_A"],
+        # Recombination accuracy, split by region (see report_recombination).
+        "rel_R_layer": rec["rel_R_layer"],
+        "rel_R_bulk": rec["rel_R_bulk"],
     }
 
 
@@ -665,6 +783,64 @@ def report_current_comparison(summaries):
             s["bias"], s["j_pinn"], ref_txt, ratio, spread))
     print("  (PINN spread = max-min of Jn+Jp across the device, as % of its mean;")
     print("   the total current must be x-independent, so this is a self-consistency check)")
+
+
+def report_recombination(problem, ref, n_layer_nm=5.0):
+    """Score the Langevin recombination profile, and the boundary layers.
+
+    R = gammar*(q/eps)*(mu_n + mu_p)*(n*p - nie^2) is the emission-zone
+    observable: it is a *product* of the two densities, so it peaks where the
+    carrier populations overlap rather than where either is largest. Bulk-
+    dominated density errors can therefore look small while R at the contacts
+    is badly wrong, which is what this reports separately.
+
+    n_layer_nm : width of the contact region scored as the "boundary layer".
+    """
+    x_nm = ref["x_nm"]
+    # Predicted densities on the reference nodes, in cm^-3.
+    x_t = torch.as_tensor(ref["x_hat"].reshape(-1, 1), dtype=problem.dtype,
+                          device=problem.device)
+    # no_grad: these are being reported, not differentiated.
+    with torch.no_grad():
+        n_pred = problem.n_net.density(x_t).cpu().numpy().flatten() * C_TILDE
+        p_pred = problem.p_net.density(x_t).cpu().numpy().flatten() * C_TILDE
+
+    # R in physical units, both from the PINN and from the reference profiles.
+    pref = GAMMAR * (core.Q / (EPS_R * core.EPS_0)) * (MU_N + MU_P)
+    nie = SCALING["nie"]
+    R_pred = pref * (n_pred * p_pred - nie ** 2)
+    R_ref = pref * (ref["electrons"] * ref["holes"] - nie ** 2)
+
+    # Masks: the two contact layers, and the bulk between them.
+    layer = (x_nm <= n_layer_nm) | (x_nm >= x_nm[-1] - n_layer_nm)
+    bulk = ~layer
+
+    def rel(mask):
+        num = np.sum(np.abs(R_pred[mask] - R_ref[mask]))
+        den = np.sum(np.abs(R_ref[mask]))
+        return num / den if den else float("nan")
+
+    print()
+    print("=" * 70)
+    print("Langevin recombination R(x) at {0:.2f} V".format(ref["bias"]))
+    print("=" * 70)
+    print("  R relative L1, contact layers (<={0:.0f} nm): {1:8.3f} %".format(
+        n_layer_nm, rel(layer) * 100))
+    print("  R relative L1, bulk                       : {0:8.3f} %".format(
+        rel(bulk) * 100))
+    print("  R relative L1, whole device               : {0:8.3f} %".format(
+        rel(np.ones_like(layer, dtype=bool)) * 100))
+    print("  peak R  PINN {0:.4e} at x = {1:6.2f} nm".format(
+        R_pred.max(), x_nm[int(np.argmax(R_pred))]))
+    print("  peak R  ref  {0:.4e} at x = {1:6.2f} nm".format(
+        R_ref.max(), x_nm[int(np.argmax(R_ref))]))
+    # Where the emission actually sits: the integrated-R centroid.
+    def centroid(R):
+        w = np.clip(R, 0.0, None)
+        return float(np.sum(w * x_nm) / np.sum(w)) if np.sum(w) else float("nan")
+    print("  emission centroid  PINN {0:6.2f} nm   ref {1:6.2f} nm".format(
+        centroid(R_pred), centroid(R_ref)))
+    return {"rel_R_layer": rel(layer), "rel_R_bulk": rel(bulk)}
 
 
 def report_accuracy_summary(summaries):
