@@ -1,0 +1,13 @@
+# Optical stack for examples/oled.ini (bottom-emitting OLED).
+# Same format as the standalone oled_outcoupling tool:
+#   [*]name  thickness_m  n  k    ('*' marks the emissive layer)
+# The '*' layer is mapped to the electrical layer named by emission_layer
+# in the deck; the recombination profile from the electrical solve sets the
+# dipole weighting across it.
+air       300e-9   1.00  0.0
+glass     500e-9   1.52  0.0
+ito       120e-9   1.90  0.01
+htl        40e-9   1.75  0.001
+*emissive  30e-9   1.75  0.001
+etl        40e-9   1.75  0.001
+al        100e-9   1.02  6.85

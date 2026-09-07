@@ -1,0 +1,32 @@
+#gpvdm
+#title Passivated - Position
+#type xy
+#x_mul 1000.000000
+#y_mul 1000000000.000000
+#z_mul 1000.000000
+#data_mul 1.000000
+#x_offset 1.612450e-03
+#z_offset 1.612450e-03
+#x_label x-position
+#y_label y-position
+#z_label z-position
+#data_label True/False
+#x_units mm
+#y_units nm
+#z_units mm
+#data_units au
+#logscale_x 0
+#logscale_y 0
+#logscale_z 0
+#logscale_data 1
+#section_one 
+#section_two 
+#time 0.000000e+00
+#Vexternal 2.000000e-01
+#x 1
+#y 100
+#z 1
+#begin
+#data
+5.000000e-10 0
+#end

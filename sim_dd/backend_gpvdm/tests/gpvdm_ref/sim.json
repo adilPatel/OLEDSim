@@ -1,0 +1,1172 @@
+{
+	"sim": {
+		"simmode":"segment0@jv",
+		"stoppoint":0,
+		"version":"v8.0",
+		"notes":"",
+		"first_sim_message":"",
+		"use_gpvdm_local":"True",
+		"opengl": {
+			"gl_dy_layer_offset":0.1,
+			"gl_device_height":1.4,
+			"gl_render_text":"True",
+			"color_r":0.8,
+			"color_g":0.8,
+			"color_b":0.8,
+			"color_alpha":0.8,
+			"render_grid":"True",
+			"gl_view": {
+				"xRot":25.0,
+				"yRot":1.0,
+				"zRot":0.0,
+				"x_pos":0.0,
+				"y_pos":0.0,
+				"zoom":16,
+				"id":"idaa57d6f71474e49f",
+				"english_name":"view",
+				"window_x":0.0,
+				"window_y":0.0,
+				"window_w":0.0,
+				"window_h":0.0,
+				"enable_view_move":"True"
+				}
+			}
+		},
+	"jv": {
+		"segments":1,
+		"segment0": {
+			"english_name":"JV\ncurve",
+			"icon":"jv",
+			"config": {
+				"Vstart":0.0,
+				"Vstop":2.0,
+				"Vstep":0.05,
+				"jv_step_mul":1.0,
+				"jv_use_external_voltage_as_stop":"False",
+				"jv_light_efficiency":1.0,
+				"jv_max_j":1000.0,
+				"jv_Rcontact":-1.0,
+				"jv_Rshunt":-1.0,
+				"jv_single_point":"False",
+				"dump_verbosity":1,
+				"dump_energy_space":"false",
+				"dump_x":0,
+				"dump_y":0,
+				"dump_z":0
+				},
+			"id":"idadcc89e9fe19921b"
+			}
+		},
+	"dump": {
+		"plot":"False",
+		"newton_dump":"False",
+		"dump_dynamic":"False",
+		"startstop":"False",
+		"plotfile":"plot",
+		"start_stop_time":0.0,
+		"dump_1d_slice_xpos":-1,
+		"dump_1d_slice_zpos":-1,
+		"dump_verbose_electrical_solver_results":"True",
+		"dump_write_converge":"True",
+		"dump_norm_time_to_one":"False",
+		"dump_norm_y_axis":"False",
+		"dump_print_hardware_info":0,
+		"dump_write_out_band_structure":0,
+		"dump_first_guess":"False",
+		"dump_log_level":"screen_and_disk",
+		"dump_optical_probe":"False",
+		"dump_optical_probe_spectrum":"False",
+		"dump_print_text":0,
+		"dump_info_text":"True",
+		"dump_ray_trace_map":"False",
+		"dump_use_cache":"False",
+		"dump_write_headers":"True",
+		"dump_remove_dos_cache":"False",
+		"dump_dynamic_pl_energy":"False",
+		"banned_files": {
+			"segments":0
+			}
+		},
+	"math": {
+		"maxelectricalitt_first":1000,
+		"electricalclamp_first":0.1,
+		"math_electrical_error_first":1e-09,
+		"maxelectricalitt":100,
+		"electricalclamp":1.0,
+		"electricalerror":1e-08,
+		"newton_clever_exit":"True",
+		"newton_min_itt":5,
+		"remesh":0,
+		"newmeshsize":8,
+		"kl_in_newton":1,
+		"solver_name":"umfpack",
+		"newton_name":"newton",
+		"complex_solver_name":"complex_umfpack",
+		"math_t0":300.0,
+		"math_d0":243.75,
+		"math_n0":1e+20,
+		"math_newton_cache":"False",
+		"math_dynamic_mesh":"False",
+		"cache_path":"/home/rod/cache",
+		"math_stop_on_convergence_problem":"False",
+		"math_stop_on_inverted_fermi_level":"False",
+		"solver_verbosity":"solver_verbosity_at_end"
+		},
+	"light": {
+		"light_model":"full",
+		"Psun":0.0,
+		"sun":"AM1.5G",
+		"alignmesh":0,
+		"meshpoints":200,
+		"light_wavelength_auto_mesh":"False",
+		"electron_eff":1.0,
+		"hole_eff":1.0,
+		"Dphotoneff":0.8718361,
+		"NDfilter":0.0,
+		"light_flat_generation_rate":2e+28,
+		"light_file_generation":"Gn.inp",
+		"light_file_qe_spectra":"",
+		"light_file_generation_shift":2e-07,
+		"light_profile":"box",
+		"dump_verbosity":10
+		},
+	"light_sources": {
+		"config": {
+			"lpoints":200
+			},
+		"lights": {
+			"segments":0
+			}
+		},
+	"detectors": {
+		"segments":0
+		},
+	"server": {
+		"gpvdm_core_max_threads":0,
+		"server_stall_time":2000,
+		"server_exit_on_dos_error":1,
+		"server_max_run_time":345600,
+		"server_auto_cpus":0,
+		"server_min_cpus":1,
+		"server_steel":0,
+		"cluster":1,
+		"server_use_dos_disk_cache":"True",
+		"max_gpvdm_instances":0
+		},
+	"epitaxy": {
+		"layers":1,
+		"layer0": {
+			"shape_enabled":"True",
+			"display_options": {
+				"show_solid":"True",
+				"show_mesh":"True",
+				"show_cut_through_x":"False",
+				"show_cut_through_y":"False",
+				"hidden":"False"
+				},
+			"shape_type":"box",
+			"rotate_y":0,
+			"rotate_x":0,
+			"dx":1e-09,
+			"dy":1e-07,
+			"dz":1e-09,
+			"x0":0.0,
+			"z0":0.0,
+			"y0":0.0,
+			"dx_padding":0.0,
+			"dy_padding":0.0,
+			"dz_padding":0.0,
+			"shape_nx":1,
+			"shape_ny":1,
+			"shape_nz":1,
+			"shape_dos": {
+				"enabled":"True",
+				"symmetric_mobility_e":"symmetric",
+				"mue_z":1e-15,
+				"mue_x":1e-15,
+				"mue_y":1e-05,
+				"symmetric_mobility_h":"symmetric",
+				"muh_z":1e-15,
+				"muh_x":1e-15,
+				"muh_y":1e-05,
+				"Nc":5e+25,
+				"Nv":5e+25,
+				"free_to_free_recombination":0.0,
+				"dos_free_carrier_stats":"mb_equation",
+				"ss_srh_enabled":"False",
+				"srh_n1":1e+20,
+				"srh_p1":1e+20,
+				"srh_tau_n":1e-15,
+				"srh_tau_p":1e-15,
+				"dostype":"exponential",
+				"complex_lumo": {
+					"segments":2,
+					"function0": {
+						"function":"exp",
+						"function_enable":"True",
+						"function_a":4.207452e+20,
+						"function_b":0.1,
+						"function_c":0.0
+						},
+					"function1": {
+						"function":"exp",
+						"function_enable":"True",
+						"function_a":4.207452e+20,
+						"function_b":0.1,
+						"function_c":0.0
+						}
+					},
+				"complex_homo": {
+					"segments":2,
+					"function0": {
+						"function":"exp",
+						"function_enable":"True",
+						"function_a":4.207452e+20,
+						"function_b":0.1,
+						"function_c":0.0
+						},
+					"function1": {
+						"function":"exp",
+						"function_enable":"True",
+						"function_a":4.207452e+20,
+						"function_b":0.1,
+						"function_c":0.0
+						}
+					},
+				"Ntrape":1e+20,
+				"Ntraph":1e+20,
+				"Etrape":0.06,
+				"Etraph":0.06,
+				"ion_density":0.0,
+				"ion_mobility":0.0,
+				"doping_start":0.0,
+				"doping_stop":0.0,
+				"Na0":0.0,
+				"Na1":0.0,
+				"Nd0":0.0,
+				"Nd1":0.0,
+				"Tstart":300.0,
+				"Tstop":305.0,
+				"Tpoints":1,
+				"nstart":-2.5,
+				"nstop":1.0,
+				"npoints":1000,
+				"pstart":-2.5,
+				"pstop":1.0,
+				"ppoints":1000,
+				"srh_start":-0.5,
+				"srhsigman_e":2.131895e-21,
+				"srhsigmap_e":3.142822e-22,
+				"srhvth_e":100000.0,
+				"srhsigman_h":3.142822e-22,
+				"srhsigmap_h":2.131895e-21,
+				"srhvth_h":100000.0,
+				"srh_bands":5,
+				"Esteps":1000,
+				"dump_band_structure":0,
+				"dos_enable_auger":"False",
+				"dos_auger_Cn":1e-26,
+				"dos_auger_Cp":1e-26,
+				"Xi":1.6,
+				"Eg":1.2,
+				"epsilonr":5.0,
+				"id":"id0a035de21740cd79",
+				"exciton_enabled":"False",
+				"exciton_L":1e-08,
+				"exciton_tau":1e-10,
+				"exciton_kpl":4000000000.0,
+				"exciton_kfret":0.0,
+				"exciton_alpha":1e-13,
+				"exciton_kdis":100000000000.0,
+				"singlet_enabled":"False",
+				"singlet_k_fret":10000000000.0,
+				"singlet_k_s":80000000.0,
+				"singlet_k_isc":22000.0,
+				"singlet_k_ss":3.5e-18,
+				"singlet_k_sp":3e-10,
+				"singlet_k_st":1.9e-16,
+				"singlet_k_dext":10000000000.0,
+				"singlet_k_t":650.0,
+				"singlet_k_tp":2.8e-19,
+				"singlet_k_tt":2.2e-18,
+				"singlet_k_sd":1000000000.0,
+				"singlet_k_iscd":22000.0,
+				"singlet_k_spd":3e-16,
+				"singlet_k_std":1.9e-16,
+				"singlet_k_ssd":9.6e-19,
+				"singlet_k_td":660.0,
+				"singlet_k_ttd":2.4e-21,
+				"singlet_k_tpd":5.6e-19,
+				"singlet_gamma":0.29,
+				"singlet_zeta":1.4e-11,
+				"singlet_k_cav":1000000000000.0,
+				"singlet_beta_sp":0.0001,
+				"singlet_C":0.02,
+				"singlet_N_dop":4.2e+25,
+				"singlet_W":0.026
+				},
+			"shape_electrical": {
+				"enabled":"False",
+				"electrical_component":"resistance",
+				"electrical_shunt":1000000.0,
+				"electrical_symmetrical_resistance":"symmetric",
+				"electrical_series_z":0.2439,
+				"electrical_series_x":0.2439,
+				"electrical_series_y":1e-08,
+				"electrical_n":1.2,
+				"electrical_J0":5e-09,
+				"electrical_enable_generation":"False",
+				"id":"id102667c0bfb967f5"
+				},
+			"shape_remove_layer":"False",
+			"color_r":1.0,
+			"color_g":0,
+			"color_b":0,
+			"color_alpha":0.5,
+			"optical_material":"blends/p3htpcbm",
+			"shape_pl": {
+				"pl_emission_enabled":"False",
+				"pl_use_experimental_emission_spectra":"False",
+				"pl_input_spectrum":"none",
+				"pl_experimental_emission_efficiency":1.0,
+				"pl_fe_fh":1.0,
+				"pl_fe_te":1.0,
+				"pl_te_fh":1.0,
+				"pl_th_fe":1.0,
+				"pl_fh_th":1.0,
+				"ray_theta_steps":200,
+				"ray_theta_start":0,
+				"ray_theta_stop":360,
+				"ray_phi_steps":5,
+				"ray_phi_start":0,
+				"ray_phi_stop":360,
+				"ray_emission_source":"ray_emission_single_point"
+				},
+			"shape_heat": {
+				"thermal_kl":1.0,
+				"thermal_tau_e":1.0,
+				"thermal_tau_h":1.0
+				},
+			"shape_name":"newlayer0",
+			"Gnp":0.0,
+			"moveable":"False",
+			"id":"ide800a80524d33146",
+			"layer_type":"active",
+			"layer_interface": {
+				"interface_model":"none",
+				"interface_eh_tau":1e-15,
+				"interface_tunnel_e":"False",
+				"interface_Ge":1e-15,
+				"interface_tunnel_h":"False",
+				"interface_Gh":1e-15,
+				"interface_left_doping_enabled":"False",
+				"interface_left_doping":1e+20,
+				"interface_right_doping_enabled":"False",
+				"interface_right_doping":1e+20
+				},
+			"solve_optical_problem":"True",
+			"solve_thermal_problem":"True",
+			"layer_shapes":0
+			},
+		"contacts": {
+			"segments":2,
+			"segment0": {
+				"shape_enabled":"True",
+				"display_options": {
+					"show_solid":"True",
+					"show_mesh":"True",
+					"show_cut_through_x":"False",
+					"show_cut_through_y":"False",
+					"hidden":"False"
+					},
+				"shape_type":"box",
+				"rotate_y":0,
+				"rotate_x":0,
+				"dx":1e-09,
+				"dy":1e-09,
+				"dz":1e-09,
+				"x0":0.0,
+				"z0":0.0,
+				"y0":0.0,
+				"dx_padding":0.0,
+				"dy_padding":0.0,
+				"dz_padding":0.0,
+				"shape_nx":1,
+				"shape_ny":1,
+				"shape_nz":1,
+				"shape_dos": {
+					"enabled":"False",
+					"symmetric_mobility_e":"symmetric",
+					"mue_z":1e-15,
+					"mue_x":1e-15,
+					"mue_y":1e-05,
+					"symmetric_mobility_h":"symmetric",
+					"muh_z":1e-15,
+					"muh_x":1e-15,
+					"muh_y":1e-05,
+					"Nc":5e+25,
+					"Nv":5e+25,
+					"free_to_free_recombination":0.0,
+					"dos_free_carrier_stats":"mb_equation",
+					"ss_srh_enabled":"False",
+					"srh_n1":1e+20,
+					"srh_p1":1e+20,
+					"srh_tau_n":1e-15,
+					"srh_tau_p":1e-15,
+					"dostype":"exponential",
+					"complex_lumo": {
+						"segments":2,
+						"function0": {
+							"function":"exp",
+							"function_enable":"True",
+							"function_a":4.207452e+20,
+							"function_b":0.1,
+							"function_c":0.0
+							},
+						"function1": {
+							"function":"exp",
+							"function_enable":"True",
+							"function_a":4.207452e+20,
+							"function_b":0.1,
+							"function_c":0.0
+							}
+						},
+					"complex_homo": {
+						"segments":2,
+						"function0": {
+							"function":"exp",
+							"function_enable":"True",
+							"function_a":4.207452e+20,
+							"function_b":0.1,
+							"function_c":0.0
+							},
+						"function1": {
+							"function":"exp",
+							"function_enable":"True",
+							"function_a":4.207452e+20,
+							"function_b":0.1,
+							"function_c":0.0
+							}
+						},
+					"Ntrape":1e+20,
+					"Ntraph":1e+20,
+					"Etrape":0.06,
+					"Etraph":0.06,
+					"ion_density":0.0,
+					"ion_mobility":0.0,
+					"doping_start":0.0,
+					"doping_stop":0.0,
+					"Na0":0.0,
+					"Na1":0.0,
+					"Nd0":0.0,
+					"Nd1":0.0,
+					"Tstart":300.0,
+					"Tstop":305.0,
+					"Tpoints":1,
+					"nstart":-2.5,
+					"nstop":1.0,
+					"npoints":1000,
+					"pstart":-2.5,
+					"pstop":1.0,
+					"ppoints":1000,
+					"srh_start":-0.5,
+					"srhsigman_e":2.131895e-21,
+					"srhsigmap_e":3.142822e-22,
+					"srhvth_e":100000.0,
+					"srhsigman_h":3.142822e-22,
+					"srhsigmap_h":2.131895e-21,
+					"srhvth_h":100000.0,
+					"srh_bands":5,
+					"Esteps":1000,
+					"dump_band_structure":0,
+					"dos_enable_auger":"False",
+					"dos_auger_Cn":1e-26,
+					"dos_auger_Cp":1e-26,
+					"Xi":1.6,
+					"Eg":1.2,
+					"epsilonr":5.0,
+					"id":"id79ab7031f565824f",
+					"exciton_enabled":"False",
+					"exciton_L":1e-08,
+					"exciton_tau":1e-10,
+					"exciton_kpl":4000000000.0,
+					"exciton_kfret":0.0,
+					"exciton_alpha":1e-13,
+					"exciton_kdis":100000000000.0,
+					"singlet_enabled":"False",
+					"singlet_k_fret":10000000000.0,
+					"singlet_k_s":80000000.0,
+					"singlet_k_isc":22000.0,
+					"singlet_k_ss":3.5e-18,
+					"singlet_k_sp":3e-10,
+					"singlet_k_st":1.9e-16,
+					"singlet_k_dext":10000000000.0,
+					"singlet_k_t":650.0,
+					"singlet_k_tp":2.8e-19,
+					"singlet_k_tt":2.2e-18,
+					"singlet_k_sd":1000000000.0,
+					"singlet_k_iscd":22000.0,
+					"singlet_k_spd":3e-16,
+					"singlet_k_std":1.9e-16,
+					"singlet_k_ssd":9.6e-19,
+					"singlet_k_td":660.0,
+					"singlet_k_ttd":2.4e-21,
+					"singlet_k_tpd":5.6e-19,
+					"singlet_gamma":0.29,
+					"singlet_zeta":1.4e-11,
+					"singlet_k_cav":1000000000000.0,
+					"singlet_beta_sp":0.0001,
+					"singlet_C":0.02,
+					"singlet_N_dop":4.2e+25,
+					"singlet_W":0.026
+					},
+				"shape_electrical": {
+					"enabled":"False",
+					"electrical_component":"resistance",
+					"electrical_shunt":1000000.0,
+					"electrical_symmetrical_resistance":"symmetric",
+					"electrical_series_z":0.2439,
+					"electrical_series_x":0.2439,
+					"electrical_series_y":1e-08,
+					"electrical_n":1.2,
+					"electrical_J0":5e-09,
+					"electrical_enable_generation":"False",
+					"id":"id97b0cfd644d61701"
+					},
+				"shape_remove_layer":"False",
+				"color_r":0.8,
+				"color_g":0.8,
+				"color_b":0.8,
+				"color_alpha":0.8,
+				"optical_material":"blends/p3htpcbm",
+				"shape_pl": {
+					"pl_emission_enabled":"False",
+					"pl_use_experimental_emission_spectra":"False",
+					"pl_input_spectrum":"none",
+					"pl_experimental_emission_efficiency":1.0,
+					"pl_fe_fh":1.0,
+					"pl_fe_te":1.0,
+					"pl_te_fh":1.0,
+					"pl_th_fe":1.0,
+					"pl_fh_th":1.0,
+					"ray_theta_steps":200,
+					"ray_theta_start":0,
+					"ray_theta_stop":360,
+					"ray_phi_steps":5,
+					"ray_phi_start":0,
+					"ray_phi_stop":360,
+					"ray_emission_source":"ray_emission_single_point"
+					},
+				"shape_heat": {
+					"thermal_kl":1.0,
+					"thermal_tau_e":1.0,
+					"thermal_tau_h":1.0
+					},
+				"shape_name":"none",
+				"Gnp":0.0,
+				"moveable":"False",
+				"id":"idaeb406b1992b301c",
+				"position":"top",
+				"applied_voltage_type":"change",
+				"applied_voltage":0.0,
+				"contact_resistance_sq":"0.0",
+				"shunt_resistance_sq":"1e7",
+				"np":1e+25,
+				"charge_type":"hole",
+				"physical_model":"ohmic",
+				"ve0":10000000.0,
+				"vh0":10000000.0
+				},
+			"segment1": {
+				"shape_enabled":"True",
+				"display_options": {
+					"show_solid":"True",
+					"show_mesh":"True",
+					"show_cut_through_x":"False",
+					"show_cut_through_y":"False",
+					"hidden":"False"
+					},
+				"shape_type":"box",
+				"rotate_y":0,
+				"rotate_x":0,
+				"dx":1e-09,
+				"dy":1e-09,
+				"dz":1e-09,
+				"x0":0.0,
+				"z0":0.0,
+				"y0":0.0,
+				"dx_padding":0.0,
+				"dy_padding":0.0,
+				"dz_padding":0.0,
+				"shape_nx":1,
+				"shape_ny":1,
+				"shape_nz":1,
+				"shape_dos": {
+					"enabled":"False",
+					"symmetric_mobility_e":"symmetric",
+					"mue_z":1e-15,
+					"mue_x":1e-15,
+					"mue_y":1e-05,
+					"symmetric_mobility_h":"symmetric",
+					"muh_z":1e-15,
+					"muh_x":1e-15,
+					"muh_y":1e-05,
+					"Nc":5e+25,
+					"Nv":5e+25,
+					"free_to_free_recombination":0.0,
+					"dos_free_carrier_stats":"mb_equation",
+					"ss_srh_enabled":"False",
+					"srh_n1":1e+20,
+					"srh_p1":1e+20,
+					"srh_tau_n":1e-15,
+					"srh_tau_p":1e-15,
+					"dostype":"exponential",
+					"complex_lumo": {
+						"segments":2,
+						"function0": {
+							"function":"exp",
+							"function_enable":"True",
+							"function_a":4.207452e+20,
+							"function_b":0.1,
+							"function_c":0.0
+							},
+						"function1": {
+							"function":"exp",
+							"function_enable":"True",
+							"function_a":4.207452e+20,
+							"function_b":0.1,
+							"function_c":0.0
+							}
+						},
+					"complex_homo": {
+						"segments":2,
+						"function0": {
+							"function":"exp",
+							"function_enable":"True",
+							"function_a":4.207452e+20,
+							"function_b":0.1,
+							"function_c":0.0
+							},
+						"function1": {
+							"function":"exp",
+							"function_enable":"True",
+							"function_a":4.207452e+20,
+							"function_b":0.1,
+							"function_c":0.0
+							}
+						},
+					"Ntrape":1e+20,
+					"Ntraph":1e+20,
+					"Etrape":0.06,
+					"Etraph":0.06,
+					"ion_density":0.0,
+					"ion_mobility":0.0,
+					"doping_start":0.0,
+					"doping_stop":0.0,
+					"Na0":0.0,
+					"Na1":0.0,
+					"Nd0":0.0,
+					"Nd1":0.0,
+					"Tstart":300.0,
+					"Tstop":305.0,
+					"Tpoints":1,
+					"nstart":-2.5,
+					"nstop":1.0,
+					"npoints":1000,
+					"pstart":-2.5,
+					"pstop":1.0,
+					"ppoints":1000,
+					"srh_start":-0.5,
+					"srhsigman_e":2.131895e-21,
+					"srhsigmap_e":3.142822e-22,
+					"srhvth_e":100000.0,
+					"srhsigman_h":3.142822e-22,
+					"srhsigmap_h":2.131895e-21,
+					"srhvth_h":100000.0,
+					"srh_bands":5,
+					"Esteps":1000,
+					"dump_band_structure":0,
+					"dos_enable_auger":"False",
+					"dos_auger_Cn":1e-26,
+					"dos_auger_Cp":1e-26,
+					"Xi":1.6,
+					"Eg":1.2,
+					"epsilonr":5.0,
+					"id":"idddf0550daadfedc2",
+					"exciton_enabled":"False",
+					"exciton_L":1e-08,
+					"exciton_tau":1e-10,
+					"exciton_kpl":4000000000.0,
+					"exciton_kfret":0.0,
+					"exciton_alpha":1e-13,
+					"exciton_kdis":100000000000.0,
+					"singlet_enabled":"False",
+					"singlet_k_fret":10000000000.0,
+					"singlet_k_s":80000000.0,
+					"singlet_k_isc":22000.0,
+					"singlet_k_ss":3.5e-18,
+					"singlet_k_sp":3e-10,
+					"singlet_k_st":1.9e-16,
+					"singlet_k_dext":10000000000.0,
+					"singlet_k_t":650.0,
+					"singlet_k_tp":2.8e-19,
+					"singlet_k_tt":2.2e-18,
+					"singlet_k_sd":1000000000.0,
+					"singlet_k_iscd":22000.0,
+					"singlet_k_spd":3e-16,
+					"singlet_k_std":1.9e-16,
+					"singlet_k_ssd":9.6e-19,
+					"singlet_k_td":660.0,
+					"singlet_k_ttd":2.4e-21,
+					"singlet_k_tpd":5.6e-19,
+					"singlet_gamma":0.29,
+					"singlet_zeta":1.4e-11,
+					"singlet_k_cav":1000000000000.0,
+					"singlet_beta_sp":0.0001,
+					"singlet_C":0.02,
+					"singlet_N_dop":4.2e+25,
+					"singlet_W":0.026
+					},
+				"shape_electrical": {
+					"enabled":"False",
+					"electrical_component":"resistance",
+					"electrical_shunt":1000000.0,
+					"electrical_symmetrical_resistance":"symmetric",
+					"electrical_series_z":0.2439,
+					"electrical_series_x":0.2439,
+					"electrical_series_y":1e-08,
+					"electrical_n":1.2,
+					"electrical_J0":5e-09,
+					"electrical_enable_generation":"False",
+					"id":"id1d87ebd9710c9f75"
+					},
+				"shape_remove_layer":"False",
+				"color_r":0.8,
+				"color_g":0.8,
+				"color_b":0.8,
+				"color_alpha":0.8,
+				"optical_material":"blends/p3htpcbm",
+				"shape_pl": {
+					"pl_emission_enabled":"False",
+					"pl_use_experimental_emission_spectra":"False",
+					"pl_input_spectrum":"none",
+					"pl_experimental_emission_efficiency":1.0,
+					"pl_fe_fh":1.0,
+					"pl_fe_te":1.0,
+					"pl_te_fh":1.0,
+					"pl_th_fe":1.0,
+					"pl_fh_th":1.0,
+					"ray_theta_steps":200,
+					"ray_theta_start":0,
+					"ray_theta_stop":360,
+					"ray_phi_steps":5,
+					"ray_phi_start":0,
+					"ray_phi_stop":360,
+					"ray_emission_source":"ray_emission_single_point"
+					},
+				"shape_heat": {
+					"thermal_kl":1.0,
+					"thermal_tau_e":1.0,
+					"thermal_tau_h":1.0
+					},
+				"shape_name":"none",
+				"Gnp":0.0,
+				"moveable":"False",
+				"id":"id3825c680d152b55c",
+				"position":"bottom",
+				"applied_voltage_type":"ground",
+				"applied_voltage":0.0,
+				"contact_resistance_sq":"0.0",
+				"shunt_resistance_sq":"1e7",
+				"np":1e+25,
+				"charge_type":"electron",
+				"physical_model":"ohmic",
+				"ve0":10000000.0,
+				"vh0":10000000.0
+				}
+			}
+		},
+	"thermal": {
+		"thermal":"False",
+		"thermal_model_type":"thermal_lattice",
+		"thermal_l":"true",
+		"thermal_e":"false",
+		"thermal_h":"false",
+		"nofluxl":1,
+		"thermal_max_ittr":20,
+		"thermal_min_error":1e-07,
+		"joule_heating":"True",
+		"parasitic_heating":"True",
+		"thermal_couple_to_electrical_solver":"True",
+		"recombination_heating":"False",
+		"optical_heating":"False",
+		"dump_verbosity":1,
+		"solver_verbosity":"solver_verbosity_nothing"
+		},
+	"thermal_boundary": {
+		"Ty0_boundry":"neumann",
+		"Ty0":300.0,
+		"heatsink_y0":100.0,
+		"heatsink_length_y0":0.001,
+		"Ty1_boundry":"heatsink",
+		"Ty1":300.0,
+		"heatsink_y1":0.1,
+		"heatsink_length_y1":0.01,
+		"Tx0_boundry":"neumann",
+		"Tx0":300.0,
+		"heatsink_x0":0.1,
+		"heatsink_length_x0":0.1,
+		"Tx1_boundry":"neumann",
+		"Tx1":300.0,
+		"heatsink_x1":200,
+		"heatsink_length_x1":0.1,
+		"Tz0_boundry":"neumann",
+		"Tz0":300.0,
+		"heatsink_z0":200,
+		"heatsink_length_z0":0.1,
+		"Tz1_boundry":"neumann",
+		"Tz1":300.0,
+		"heatsink_z1":200,
+		"heatsink_length_z1":0.1
+		},
+	"exciton": {
+		"exciton_enabled":"False",
+		"exciton_max_ittr":20,
+		"exciton_min_error":1e-07,
+		"dump_verbosity":1,
+		"solver_verbosity":"solver_verbosity_nothing",
+		"segments":0
+		},
+	"exciton_boundary": {
+		"y0_boundry":"neumann",
+		"n_y0":1e+24,
+		"excitonsink_y0":100.0,
+		"excitonsink_length_y0":0.001,
+		"y1_boundry":"heatsink",
+		"n_y1":1e+24,
+		"excitonsink_y1":0.1,
+		"excitonsink_length_y1":0.01,
+		"x0_boundry":"neumann",
+		"n_x0":1e+24,
+		"excitonsink_x0":0.1,
+		"excitonsink_length_x0":0.1,
+		"x1_boundry":"neumann",
+		"n_x1":1e+24,
+		"excitonsink_x1":200,
+		"excitonsink_length_x1":0.1,
+		"z0_boundry":"neumann",
+		"n_z0":1e+24,
+		"excitonsink_z0":200,
+		"excitonsink_length_z0":0.1,
+		"z1_boundry":"neumann",
+		"n_z1":1e+24,
+		"excitonsink_z1":200,
+		"excitonsink_length_z1":0.1
+		},
+	"ray": {
+		"segments":1,
+		"segment0": {
+			"english_name":"Ray\ntrace",
+			"icon":"ray",
+			"config": {
+				"ray_wavelength_points":100,
+				"ray_auto_wavelength_range":"true",
+				"ray_lambda_start":3e-07,
+				"ray_lambda_stop":7e-07,
+				"ray_auto_run":"ray_run_once",
+				"ray_escape_bins":20
+				}
+			}
+		},
+	"suns_voc": {
+		"segments":1,
+		"segment0": {
+			"english_name":"Suns\nVoc",
+			"icon":"sunsvoc",
+			"sun_voc_single_point":"False",
+			"sun_voc_Psun_start":0.11,
+			"sun_voc_Psun_stop":1.1,
+			"sun_voc_Psun_mul":1.2,
+			"dump_verbosity":1
+			}
+		},
+	"suns_jsc": {
+		"segments":1,
+		"segment0": {
+			"english_name":"Suns\nVoc",
+			"icon":"sunsjsc",
+			"sunstart":0.01,
+			"sunstop":10.0,
+			"sundp":0.01,
+			"sundpmul":1.05
+			}
+		},
+	"ce": {
+		"segments":0
+		},
+	"transfer_matrix": {
+		"segments":0
+		},
+	"pl_ss": {
+		"segments":0
+		},
+	"eqe": {
+		"segments":0
+		},
+	"fdtd": {
+		"segments":0
+		},
+	"fits": {
+		"fit_config": {
+			"fit_randomize":"False",
+			"fit_random_reset_ittr":400,
+			"fit_stall_steps":400,
+			"fit_disable_reset_at":0.095,
+			"fit_converge_error":0.001,
+			"fit_enable_simple_reset":"True",
+			"fit_simplexmul":0.1,
+			"fit_simplex_reset":200,
+			"fit_method":"simplex"
+			},
+		"duplicate": {
+			"segments":0
+			},
+		"vars": {
+			"segments":1,
+			"segment0": {
+				"fit_var_enabled":"True",
+				"human_var":"one/two/three",
+				"json_var":"one/two/three",
+				"min":0.0,
+				"max":100.0,
+				"log_fit":"False",
+				"error":100.0
+				}
+			},
+		"rules": {
+			"segments":1,
+			"segment0": {
+				"fit_rule_enabled":"False",
+				"human_x":"one/two/three",
+				"human_y":"one/two/three",
+				"function":"x>y",
+				"json_x":"one/two/three",
+				"json_y":"one/two/three"
+				}
+			},
+		"fits": {
+			"data_sets":1,
+			"data_set0": {
+				"fit_patch": {
+					"segments":1,
+					"segment0": {
+						"json_path":"one/two/three",
+						"human_path":"one/two/three",
+						"val":"jv@jv"
+						}
+					},
+				"config": {
+					"enabled":"True",
+					"plugin":"fit_stark",
+					"fit_name":"jv_light_0h",
+					"fit_error_mul":1.0,
+					"time_shift":0.0,
+					"fit_shift_y":0.0,
+					"start":0.0,
+					"stop":0.85,
+					"sim_data":"jv.dat",
+					"log_x":"False",
+					"log_y":"False",
+					"log_y_keep_sign":"False",
+					"fit_invert_simulation_y":"False",
+					"fit_subtract_lowest_point":"False",
+					"fit_set_first_point_to_zero":"False",
+					"fit_set_error_to_zero_before":-100.0,
+					"fit_hidden":"False",
+					"fit_against":"self"
+					},
+				"import_config": {
+					"import_file_path":"none",
+					"import_x_combo_pos":9,
+					"import_data_combo_pos":5,
+					"import_x_spin":0,
+					"import_data_spin":1,
+					"import_title":"Voltage - J",
+					"import_xlabel":"Voltage",
+					"import_data_label":"J",
+					"import_area":0.104,
+					"import_data_invert":"False",
+					"import_x_invert":"False",
+					"data_file":"none"
+					},
+				"id":"iddf9d918cbf77f13a"
+				}
+			}
+		},
+	"mesh": {
+		"config": {
+			"remesh_x":"True",
+			"remesh_y":"True",
+			"remesh_z":"True"
+			},
+		"mesh_x": {
+			"segments":1,
+			"segment0": {
+				"len":0.0032249,
+				"points":1.0,
+				"mul":1.0,
+				"left_right":"left"
+				}
+			},
+		"mesh_y": {
+			"segments":1,
+			"segment0": {
+				"len":1e-07,
+				"points":100,
+				"mul":1.0,
+				"left_right":"left"
+				}
+			},
+		"mesh_z": {
+			"segments":1,
+			"segment0": {
+				"len":0.0032249,
+				"points":1.0,
+				"mul":1.0,
+				"left_right":"left"
+				}
+			}
+		},
+	"time_domain": {
+		"segments":0
+		},
+	"fx_domain": {
+		"segments":0
+		},
+	"cv": {
+		"segments":0
+		},
+	"parasitic": {
+		"Rshunt":1300.0,
+		"Rcontact":14.39413,
+		"otherlayers":0.0,
+		"Rshort":1.0,
+		"id":"idae152aea83bb1c23"
+		},
+	"spm": {
+		"segments":1,
+		"segment0": {
+			"english_name":"Scanning probe\nmicroscopy",
+			"icon":"spm",
+			"config": {
+				"spm_voltage":1.0,
+				"spm_scan_section":"spm_whole_device",
+				"spm_x0":0.0,
+				"spm_z0":0.0,
+				"spm_x1":1e-06,
+				"spm_z1":1e-06
+				},
+			"id":"id5f81ffebda37ee08"
+			}
+		},
+	"hard_limit": {
+		"segments":1,
+		"segment0": {
+			"token":"Eg",
+			"min":0.0,
+			"max":5.0
+			}
+		},
+	"perovskite": {
+		"perovskite_dt":10.0,
+		"perovskite_steps":1,
+		"perovskite_enabled":"False"
+		},
+	"singlet": {
+		"singlet_enabled":"False"
+		},
+	"electrical_solver": {
+		"solver_type":"drift-diffusion",
+		"boundary": {
+			"electrical_y0_boundry":"neumann",
+			"electrical_y0":0.0,
+			"electrical_y1_boundry":"neumann",
+			"electrical_y1":0.0,
+			"electrical_x0_boundry":"neumann",
+			"electrical_x0":0.0,
+			"electrical_x1_boundry":"neumann",
+			"electrical_x1":0.0
+			},
+		"poisson": {
+			"posclamp":1.0,
+			"pos_max_ittr":100,
+			"pos_min_error":0.0001,
+			"math_enable_pos_solver":"True",
+			"dump_print_pos_error":"False",
+			"pos_dump_verbosity":0
+			}
+		},
+	"spctral2": {
+		"spctral2_lat":36,
+		"spctral2_day":322,
+		"spctral2_hour":12,
+		"spctral2_minute":30,
+		"spctral2_preasure":1.0133,
+		"spctral2_aod":0.27,
+		"spctral2_water":1.42,
+		"spctral2_no2":0.0
+		},
+	"lasers": {
+		"segments":1,
+		"segment0": {
+			"english_name":"Green",
+			"icon":"laser",
+			"config": {
+				"laserwavelength":5.2e-07,
+				"spotx":0.005,
+				"spoty":0.005,
+				"pulseJ":5e-14,
+				"laser_pulse_width":5e-09,
+				"laser_photon_efficiency":1.0
+				},
+			"id":"id0e7bd315de249eae"
+			}
+		},
+	"circuit": {
+		"enabled":"False",
+		"circuit_diagram": {
+			"segments":0
+			}
+		},
+	"gl": {
+		"segments":0
+		},
+	"world": {
+		"config": {
+			"world_automatic_size":"True",
+			"world_x0":-0.001,
+			"world_x1":0.001,
+			"world_y0":-0.001,
+			"world_y1":0.001,
+			"world_z0":-0.001,
+			"world_z1":0.001,
+			"world_margin_x0":1.1,
+			"world_margin_x1":1.1,
+			"world_margin_y0":1.1,
+			"world_margin_y1":1.5,
+			"world_margin_z0":1.1,
+			"world_margin_z1":1.1
+			},
+		"world_data": {
+			"segments":0
+			}
+		},
+	"ml": {
+		"segments":0
+		},
+	"icon":"icon",
+	"english_name":"Simulation",
+	"hidden":"False",
+	"password":"",
+	"status":"open"
+	}
